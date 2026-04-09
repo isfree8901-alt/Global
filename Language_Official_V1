@@ -1,0 +1,1837 @@
+import io
+import json
+import re
+import datetime as dt
+from pathlib import Path
+
+import pandas as pd
+import streamlit as st
+from dateutil.relativedelta import relativedelta
+
+st.set_page_config(page_title="2026 어학과정 자동 선발 시스템 v2", layout="wide")
+
+BRAND = {
+    "navy": "#1F3B73",
+    "blue": "#3B82F6",
+    "green": "#16A34A",
+    "yellow": "#D97706",
+    "red": "#DC2626",
+    "purple": "#7C3AED",
+    "gray": "#6B7280",
+    "bg": "#F8FAFC",
+    "card": "#FFFFFF",
+    "text": "#111827",
+    "muted": "#6B7280",
+    "line": "#E5E7EB",
+    "soft_blue": "#DBEAFE",
+    "soft_green": "#DCFCE7",
+    "soft_yellow": "#FEF3C7",
+    "soft_red": "#FEE2E2",
+    "soft_purple": "#EDE9FE",
+    "soft_gray": "#F3F4F6",
+}
+
+DATA_DIR = Path("./data_store_language_v2")
+DATA_DIR.mkdir(exist_ok=True)
+
+HR_SAVE_PATH = DATA_DIR / "hr_upload"
+EXEC_SAVE_PATH = DATA_DIR / "exec_upload"
+LEADER_SAVE_PATH = DATA_DIR / "leader_upload"
+GENERAL_SAVE_PATH = DATA_DIR / "general_upload"
+BLACKLIST_SAVE_PATH = DATA_DIR / "blacklist_upload"
+PREV_HISTORY_SAVE_PATH = DATA_DIR / "prev_history_upload"
+UPLOAD_META_PATH = DATA_DIR / "upload_meta.json"
+AUTO_RESULT_SAVE_PATH = DATA_DIR / "auto_result.csv"
+MANUAL_RESULT_SAVE_PATH = DATA_DIR / "manual_result.csv"
+
+COURSE_CAPACITY = {"민병철유폰": 80, "튜터링": 50, "링글": 50, "스픽": 101}
+EXECUTIVE_TITLES = {"상무보", "부사장B", "상무", "수석A", "부사장A"}
+LEADER_ROLES = {
+    "CM", "DPD", "EM", "FD", "PCM", "PD", "PPM", "관리소장", "안전소장", "지사장",
+    "팀장", "학교장", "해외법인장", "BD", "Center장", "CEO", "COO", "CSO", "PM",
+    "본부장", "부문장", "사업단장", "실장"
+}
+OVERSEAS_LOCATIONS = {"해외현장", "해외지사"}
+RESULT_ORDER = ["선발", "후순위", "제외", "수동확인"]
+RISK_ORDER = [
+    "인사DB 미매칭", "과정 미분류", "신청시간 파싱 실패", "사번 형식 이상", "GST 값 이상",
+    "블랙리스트 대상", "중복 신청", "정원 경계선", "직위/직책 판정 확인 필요"
+]
+
+
+def inject_custom_css():
+    st.markdown(
+        f"""
+        <style>
+        .stApp {{
+            background: {BRAND['bg']};
+            color: {BRAND['text']};
+        }}
+        .block-container {{
+            max-width: 1500px;
+            padding-top: 1rem;
+            padding-bottom: 2rem;
+        }}
+        section[data-testid="stSidebar"] {{
+            background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+            border-right: 1px solid {BRAND['line']};
+        }}
+        .topbar {{
+            background: linear-gradient(135deg, {BRAND['navy']} 0%, {BRAND['blue']} 100%);
+            color: white;
+            border-radius: 20px;
+            padding: 18px 22px;
+            margin-bottom: 12px;
+            box-shadow: 0 12px 30px rgba(31,59,115,0.18);
+        }}
+        .topbar-title {{
+            font-size: 1.7rem;
+            font-weight: 800;
+            margin: 0;
+        }}
+        .topbar-sub {{
+            font-size: 0.95rem;
+            opacity: 0.95;
+            margin-top: 6px;
+        }}
+        .status-strip {{
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin-top: 12px;
+        }}
+        .status-pill {{
+            background: rgba(255,255,255,0.16);
+            border: 1px solid rgba(255,255,255,0.25);
+            border-radius: 999px;
+            padding: 6px 12px;
+            font-size: 0.84rem;
+            font-weight: 700;
+        }}
+        .panel {{
+            background: {BRAND['card']};
+            border: 1px solid {BRAND['line']};
+            border-radius: 20px;
+            padding: 16px 18px;
+            box-shadow: 0 8px 24px rgba(17,24,39,0.04);
+            margin-bottom: 12px;
+        }}
+        .section-head {{
+            display:flex;
+            align-items:center;
+            justify-content:space-between;
+            gap:10px;
+            margin-bottom: 10px;
+        }}
+        .section-title {{
+            font-size: 1.05rem;
+            font-weight: 800;
+            color: {BRAND['text']};
+        }}
+        .section-desc {{
+            color: {BRAND['muted']};
+            font-size: 0.9rem;
+            margin-top: 3px;
+        }}
+        .kpi-card {{
+            border-radius: 18px;
+            padding: 16px;
+            color: white;
+            min-height: 112px;
+            box-shadow: 0 10px 25px rgba(17,24,39,0.08);
+        }}
+        .kpi-label {{
+            font-size: 0.88rem;
+            font-weight: 700;
+            opacity: 0.95;
+        }}
+        .kpi-value {{
+            font-size: 2rem;
+            font-weight: 800;
+            line-height: 1.15;
+            margin-top: 8px;
+        }}
+        .kpi-sub {{
+            font-size: 0.84rem;
+            margin-top: 8px;
+            opacity: 0.95;
+        }}
+        .kpi-blue {{ background: linear-gradient(135deg, {BRAND['navy']} 0%, {BRAND['blue']} 100%); }}
+        .kpi-green {{ background: linear-gradient(135deg, {BRAND['green']} 0%, #22c55e 100%); }}
+        .kpi-yellow {{ background: linear-gradient(135deg, {BRAND['yellow']} 0%, #f59e0b 100%); }}
+        .kpi-red {{ background: linear-gradient(135deg, {BRAND['red']} 0%, #ef4444 100%); }}
+        .kpi-purple {{ background: linear-gradient(135deg, {BRAND['purple']} 0%, #8b5cf6 100%); }}
+        .kpi-gray {{ background: linear-gradient(135deg, {BRAND['gray']} 0%, #9ca3af 100%); }}
+        .info-tag {{
+            display:inline-block;
+            padding: 5px 10px;
+            border-radius: 999px;
+            font-size: 0.78rem;
+            font-weight: 700;
+            border: 1px solid {BRAND['line']};
+            background: {BRAND['soft_gray']};
+            color: {BRAND['text']};
+            margin-right: 6px;
+        }}
+        .risk-box {{
+            background: {BRAND['soft_red']};
+            border: 1px solid #fecaca;
+            border-radius: 14px;
+            padding: 12px 14px;
+            margin-bottom: 8px;
+        }}
+        .good-box {{
+            background: {BRAND['soft_green']};
+            border: 1px solid #bbf7d0;
+            border-radius: 14px;
+            padding: 12px 14px;
+            margin-bottom: 8px;
+        }}
+        .muted-box {{
+            background: {BRAND['soft_gray']};
+            border: 1px solid {BRAND['line']};
+            border-radius: 14px;
+            padding: 12px 14px;
+            margin-bottom: 8px;
+        }}
+        .stButton > button, .stDownloadButton > button {{
+            border-radius: 12px !important;
+            font-weight: 800 !important;
+            border: 1px solid {BRAND['line']} !important;
+        }}
+        div[data-testid="stDataFrame"] {{
+            border: 1px solid {BRAND['line']};
+            border-radius: 16px;
+            overflow: hidden;
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def clean_text(value) -> str:
+    if pd.isna(value):
+        return ""
+    return str(value).strip()
+
+
+def normalize_column_token(value: str) -> str:
+    text = clean_text(value)
+    text = text.replace("\ufeff", "")
+    text = re.sub(r"\s+", "", text)
+    text = text.replace("(", "").replace(")", "")
+    text = text.replace("/", "").replace("-", "")
+    text = text.lower()
+    return text
+
+
+def safe_str_series(series: pd.Series) -> pd.Series:
+    return series.fillna("").astype(str).str.strip()
+
+
+def safe_to_datetime(series: pd.Series) -> pd.Series:
+    return pd.to_datetime(series, errors="coerce")
+
+
+def to_csv_bytes(df: pd.DataFrame) -> bytes:
+    return df.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
+
+
+def normalize_emp_no(value) -> str:
+    if pd.isna(value):
+        return ""
+    text = str(value).strip()
+    text = text.replace(" ", " ").replace("​", "")
+    text = text.replace("'", "").replace('"', "")
+    text = text.replace(",", "")
+    text = text.replace(".0", "")
+
+    # Full-width digits -> ASCII digits
+    text = text.translate(str.maketrans("０１２３４５６７８９", "0123456789"))
+
+    # 알파벳이 섞인 사번은 잘못된 값으로 간주하고 빈값 처리
+    if re.search(r"[A-Za-z]", text):
+        return ""
+
+    # Excel scientific notation fallback (e.g. 1.2345E+04)
+    sci_match = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*[eE]\s*\+?\s*(\d+)\s*", text)
+    if sci_match:
+        try:
+            text = str(int(float(text)))
+        except Exception:
+            pass
+
+    digits = "".join(ch for ch in text if ch.isdigit())
+    if not digits:
+        return ""
+
+    # 사번은 기본적으로 5자리 기준으로 맞추되, 6자리 이상은 원형 유지
+    return digits.zfill(5) if len(digits) < 5 else digits
+
+
+def infer_column(df: pd.DataFrame, candidate_keywords: list[str]):
+    normalized_map = {col: normalize_column_token(col) for col in df.columns}
+    items = list(normalized_map.items())
+    for keyword in candidate_keywords:
+        key = normalize_column_token(keyword)
+        if not key:
+            continue
+        for col, norm_col in items:
+            if key == norm_col:
+                return col
+        for col, norm_col in items:
+            if key in norm_col or norm_col in key:
+                return col
+    return None
+
+
+def parse_korean_date(date_str):
+    if pd.isna(date_str) or clean_text(date_str) == "":
+        return pd.NaT
+    text = clean_text(date_str).replace(" ", "")
+    text = re.sub(r"^(\d{2})년(\d{1,2})월$", r"20\1-\2-01", text)
+    text = re.sub(r"^(\d{4})년(\d{1,2})월$", r"\1-\2-01", text)
+    return pd.to_datetime(text, errors="coerce")
+
+
+def get_simple_course(course_name: str) -> str:
+    text = clean_text(course_name)
+    if "민병철유폰" in text or "민병철" in text:
+        return "민병철유폰"
+    if "튜터링" in text:
+        return "튜터링"
+    if "링글" in text:
+        return "링글"
+    if "스픽" in text:
+        return "스픽"
+    return "기타"
+
+
+def classify_work_location(location_text: str) -> str:
+    return "해외" if clean_text(location_text) in OVERSEAS_LOCATIONS else "국내"
+
+
+def get_role_priority(title, position):
+    if clean_text(title) in EXECUTIVE_TITLES:
+        return 0, "임원"
+    if clean_text(position) in LEADER_ROLES:
+        return 1, "직책자"
+    return 2, "비직책자"
+
+
+def get_priority_group_by_role(role_type: str, default_priority: int = 2) -> int:
+    if role_type == "임원":
+        return 0
+    if role_type == "직책자":
+        return 1
+    return default_priority
+
+
+def get_role_priority_text(role_type: str) -> str:
+    if role_type == "임원":
+        return "임원 1순위"
+    if role_type == "직책자":
+        return "직책자 2순위"
+    return "비직책자 3순위"
+
+
+def extract_leader_hr_df(hr_df: pd.DataFrame) -> pd.DataFrame:
+    if hr_df is None or hr_df.empty:
+        return pd.DataFrame()
+
+    temp = hr_df.copy()
+
+    def classify_target_type(row):
+        _, role_type = get_role_priority(row.get("직위명", ""), row.get("직책명", ""))
+        return role_type
+
+    temp["대상유형"] = temp.apply(classify_target_type, axis=1)
+    leader_df = temp[temp["대상유형"] == "직책자"].copy()
+
+    display_cols = [
+        "사번", "한글", "직급명", "직위명", "직책명",
+        "조직코드", "조직명", "부문/본부", "재직구분명", "직무명",
+        "대륙(JOB)", "국가/도시(JOB)", "근무지명(JOB)",
+        "내선번호", "휴대폰번호", "회사메일",
+        "GST(최근)", "GST(3년)", "대상유형"
+    ]
+
+    for col in display_cols:
+        if col not in leader_df.columns:
+            leader_df[col] = ""
+
+    leader_df = leader_df[display_cols].copy()
+    leader_df["사번"] = leader_df["사번"].fillna("").astype(str)
+
+    for gst_col in ["GST(최근)", "GST(3년)"]:
+        if gst_col in leader_df.columns:
+            leader_df[gst_col] = leader_df[gst_col].apply(
+                lambda x: "" if pd.isna(x) or str(x).strip() == "" else int(float(x))
+            )
+
+    return leader_df
+
+
+def ensure_columns(df: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
+    result = df.copy()
+    for col in columns:
+        if col not in result.columns:
+            result[col] = ""
+    return result
+
+
+def make_row_id(df: pd.DataFrame) -> pd.Series:
+    temp_time = pd.to_datetime(df["신청시간"], errors="coerce").dt.strftime("%Y-%m-%d %H:%M:%S").fillna("")
+    return safe_str_series(df["사번"]) + "||" + safe_str_series(df["신청과정"]) + "||" + temp_time
+
+
+def ensure_row_id(df: pd.DataFrame) -> pd.DataFrame:
+    result = df.copy()
+    if "__row_id" not in result.columns and all(c in result.columns for c in ["사번", "신청과정", "신청시간"]):
+        result["__row_id"] = make_row_id(result)
+    return result
+
+
+def normalize_display_df(df: pd.DataFrame) -> pd.DataFrame:
+    result = df.copy()
+    if "사번" in result.columns:
+        result["사번"] = result["사번"].apply(normalize_emp_no).astype(str)
+    if "한글" in result.columns:
+        if "성명" not in result.columns:
+            result["성명"] = ""
+        result["성명"] = result.apply(
+            lambda x: clean_text(x.get("한글", "")) or clean_text(x.get("성명", "")) or "미확인",
+            axis=1,
+        )
+    elif "성명" in result.columns:
+        result["성명"] = safe_str_series(result["성명"])
+    for gst_col in ["GST(최근)", "GST(3년)", " GST", "GST(3ys)"]:
+        if gst_col in result.columns:
+            result[gst_col] = result[gst_col].apply(format_gst_display)
+    return result
+
+
+def format_gst_display(value):
+    if pd.isna(value) or clean_text(value) == "":
+        return ""
+    try:
+        return str(int(float(value)))
+    except Exception:
+        return clean_text(value)
+
+
+def load_upload_meta() -> dict:
+    if UPLOAD_META_PATH.exists():
+        try:
+            return json.loads(UPLOAD_META_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+    return {}
+
+
+def save_upload_meta(meta: dict) -> None:
+    UPLOAD_META_PATH.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def save_uploaded_binary(uploaded_file, base_path: Path, file_key: str):
+    if uploaded_file is None:
+        return None
+    for old_file in base_path.parent.glob(base_path.name + ".*"):
+        try:
+            old_file.unlink()
+        except Exception:
+            pass
+    ext = Path(uploaded_file.name).suffix.lower()
+    save_path = base_path.with_suffix(ext)
+    uploaded_file.seek(0)
+    save_path.write_bytes(uploaded_file.read())
+    uploaded_file.seek(0)
+    meta = load_upload_meta()
+    meta[file_key] = {
+        "original_name": uploaded_file.name,
+        "saved_path": str(save_path),
+        "ext": ext,
+        "uploaded_at": dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    save_upload_meta(meta)
+    return save_path
+
+
+def list_existing_saved_files(base_path: Path) -> list[Path]:
+    existing_files = []
+    for file_path in base_path.parent.glob(base_path.name + ".*"):
+        try:
+            if file_path.exists() and file_path.is_file():
+                existing_files.append(file_path)
+        except Exception:
+            continue
+    existing_files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    return existing_files
+
+
+def load_saved_file(base_path: Path):
+    matched_files = list_existing_saved_files(base_path)
+    if not matched_files:
+        return None, None
+    file_path = matched_files[0]
+    try:
+        return file_path.read_bytes(), file_path.suffix.lower()
+    except Exception:
+        return None, None
+
+
+def get_saved_file_info(base_path: Path, file_key: str):
+    meta = load_upload_meta()
+    info = meta.get(file_key, {})
+    matched_files = list_existing_saved_files(base_path)
+    if not matched_files:
+        saved_path = clean_text(info.get("saved_path", ""))
+        if saved_path:
+            try:
+                file_path = Path(saved_path)
+                if file_path.exists() and file_path.is_file():
+                    matched_files = [file_path]
+            except Exception:
+                matched_files = []
+    if not matched_files:
+        return None
+    file_path = matched_files[0]
+    try:
+        fallback_uploaded_at = dt.datetime.fromtimestamp(file_path.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        fallback_uploaded_at = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return {
+        "original_name": info.get("original_name", file_path.name),
+        "saved_path": str(file_path),
+        "ext": file_path.suffix.lower(),
+        "uploaded_at": info.get("uploaded_at", fallback_uploaded_at),
+    }
+
+
+def format_relative_time(datetime_text: str) -> str:
+    if not datetime_text:
+        return ""
+    try:
+        uploaded_dt = dt.datetime.strptime(datetime_text, "%Y-%m-%d %H:%M:%S")
+        diff = dt.datetime.now() - uploaded_dt
+        sec = int(diff.total_seconds())
+        if sec < 60:
+            return f"{sec}초 전"
+        if sec < 3600:
+            return f"{sec // 60}분 전"
+        if sec < 86400:
+            return f"{sec // 3600}시간 전"
+        return f"{sec // 86400}일 전"
+    except Exception:
+        return ""
+
+
+def read_file_from_bytes(file_bytes: bytes, ext: str) -> pd.DataFrame:
+    if ext == ".csv":
+        try:
+            return pd.read_csv(io.BytesIO(file_bytes), encoding="utf-8-sig", dtype=str)
+        except Exception:
+            return pd.read_csv(io.BytesIO(file_bytes), encoding="cp949", dtype=str)
+    if ext in [".xlsx", ".xls"]:
+        return pd.read_excel(io.BytesIO(file_bytes), engine="openpyxl", dtype=str)
+    raise ValueError(f"지원하지 않는 파일 형식입니다: {ext}")
+
+
+def read_uploaded_or_saved(uploaded_file, base_path: Path, file_key: str) -> pd.DataFrame:
+    if uploaded_file is not None:
+        save_uploaded_binary(uploaded_file, base_path, file_key)
+        ext = Path(uploaded_file.name).suffix.lower()
+        uploaded_file.seek(0)
+        return read_file_from_bytes(uploaded_file.read(), ext)
+    file_bytes, ext = load_saved_file(base_path)
+    if file_bytes is not None:
+        return read_file_from_bytes(file_bytes, ext)
+    return pd.DataFrame()
+
+
+def clear_saved_files():
+    for base_path in [HR_SAVE_PATH, EXEC_SAVE_PATH, LEADER_SAVE_PATH, GENERAL_SAVE_PATH, BLACKLIST_SAVE_PATH, PREV_HISTORY_SAVE_PATH]:
+        for file_path in base_path.parent.glob(base_path.name + ".*"):
+            try:
+                file_path.unlink()
+            except Exception:
+                pass
+    for path in [UPLOAD_META_PATH, AUTO_RESULT_SAVE_PATH, MANUAL_RESULT_SAVE_PATH]:
+        if path.exists():
+            try:
+                path.unlink()
+            except Exception:
+                pass
+
+
+def standardize_hr_df(df: pd.DataFrame) -> pd.DataFrame:
+    result = df.copy()
+    hr_aliases = {
+        "사번": ["사번", "직원번호", "임직원번호", "employeeid", "empno", "id"],
+        "한글": ["한글", "성명", "이름", "한글명", "사원명", "name"],
+        "고용구분명": ["고용구분명", "고용구분"],
+        "직급명": ["직급명", "직급"],
+        "직위명": ["직위명", "직위"],
+        "조직코드": ["조직코드", "부서코드"],
+        "조직명": ["조직명", "부서명", "소속", "조직", "본부팀명"],
+        "부문/본부": ["부문/본부", "부문본부", "부문", "본부"],
+        "재직구분명": ["재직구분명", "재직구분", "재직상태"],
+        "직무명": ["직무명", "직무"],
+        "직책명": ["직책명", "직책"],
+        "대륙(JOB)": ["대륙JOB", "대륙(JOB)", "대륙"],
+        "국가/도시(JOB)": ["국가도시JOB", "국가/도시(JOB)", "국가/도시", "국가도시"],
+        "근무지명(JOB)": ["근무지명JOB", "근무지명(JOB)", "근무지", "근무지역", "근무지명"],
+        "내선번호": ["내선번호", "회사전화", "내선"],
+        "휴대폰번호": ["휴대폰번호", "휴대전화", "휴대폰", "핸드폰번호"],
+        "회사메일": ["회사메일", "이메일", "메일", "회사email", "email"],
+        "GST(최근)": ["GST최근", "GST(최근)", "최근gst"],
+        "GST(3년)": ["GST3년", "GST(3년)", "최근3년gst"],
+    }
+    rename_map = {}
+    for target_col, aliases in hr_aliases.items():
+        matched = infer_column(result, aliases)
+        if matched and matched != target_col:
+            rename_map[matched] = target_col
+    result = result.rename(columns=rename_map)
+    result = ensure_columns(result, [
+        "사번", "한글", "고용구분명", "직급명", "직위명", "조직코드", "조직명", "부문/본부", "재직구분명",
+        "직무명", "직책명", "대륙(JOB)", "국가/도시(JOB)", "근무지명(JOB)", "내선번호", "휴대폰번호",
+        "회사메일", "GST(최근)", "GST(3년)"
+    ])
+    result["사번"] = result["사번"].apply(normalize_emp_no)
+    for col in ["한글", "고용구분명", "직급명", "직위명", "조직코드", "조직명", "부문/본부", "재직구분명", "직무명", "직책명", "대륙(JOB)", "국가/도시(JOB)", "근무지명(JOB)", "내선번호", "휴대폰번호", "회사메일"]:
+        result[col] = safe_str_series(result[col])
+    result["GST(최근)"] = pd.to_numeric(result["GST(최근)"], errors="coerce")
+    result["GST(3년)"] = pd.to_numeric(result["GST(3년)"], errors="coerce")
+    result = result[result["사번"].astype(str).str.strip() != ""].copy()
+    return result
+
+
+def _standardize_applicant_common(df: pd.DataFrame, applicant_type: str, form_kind: str) -> pd.DataFrame:
+    result = df.copy()
+    rename_map = {
+        infer_column(result, [
+            "사번",
+            "사번을입력해주세요",
+            "사번을 입력해주세요",
+            "사번을입력해주세요(정확히입력해주세요)",
+            "사번을입력해주세요.(정확히입력해주세요)",
+            "임직원번호",
+            "직원번호",
+        ]): "사번",
+        infer_column(result, [
+            "성명",
+            "이름",
+            "이름을입력해주세요",
+            "이름을입력해주세요(정확히입력해주세요)",
+            "이름을입력해주세요.(정확히입력해주세요)",
+        ]): "성명",
+        infer_column(result, ["신청하려는과정을선택해주세요"]): "원본과정",
+        infer_column(result, ["시작시간"]): "시작시간",
+        infer_column(result, ["완료시간"]): "완료시간",
+        infer_column(result, ["전자메일"]): "이메일",
+        infer_column(result, ["신청하신과정에탈락이되어다른과정으로대체될경우지원하시겠습니까?"]): "대체지원여부",
+        infer_column(result, ["신청자가많아신청과정입과가어려울시다음으로선호하는과정을선택해주세요."]): "차순위희망과정",
+        infer_column(result, ["현재근무지역을선택해주세요."]): "현재근무지역",
+        infer_column(result, ["가장최근GST응시일이언제인가요?(YYYY-MM-DD)"]): "GST응시일(폼)",
+        infer_column(result, ["교육업체에서연락시수신가능한전화번호를작성해주세요.(국제전화번호가능)"]): "연락처",
+    }
+    rename_map = {k: v for k, v in rename_map.items() if k}
+    result = result.rename(columns=rename_map)
+    result = ensure_columns(result, ["사번", "성명", "원본과정", "시작시간", "완료시간", "이메일", "대체지원여부", "차순위희망과정", "현재근무지역", "GST응시일(폼)", "연락처"])
+    result["신청구분"] = applicant_type
+    result["신청원본유형"] = form_kind
+    result["사번원본"] = result["사번"].copy()
+    result["사번"] = result["사번"].apply(normalize_emp_no)
+    result["사번이상"] = result.apply(
+        lambda x: "Y" if (
+            clean_text(x.get("사번", "")) == ""
+            or not clean_text(x.get("사번", "")).isdigit()
+            or bool(re.search(r"[A-Za-z]", clean_text(x.get("사번원본", ""))))
+        ) else "",
+        axis=1,
+    )
+    result["성명"] = safe_str_series(result["성명"])
+    result["원본과정"] = safe_str_series(result["원본과정"])
+    result["신청과정"] = result["원본과정"].apply(get_simple_course)
+    start_time = safe_to_datetime(result["시작시간"])
+    end_time = safe_to_datetime(result["완료시간"])
+    result["신청시간"] = start_time.where(start_time.notna(), end_time)
+    for col in ["이메일", "대체지원여부", "차순위희망과정", "현재근무지역", "GST응시일(폼)", "연락처"]:
+        result[col] = safe_str_series(result[col])
+    return result
+
+
+def standardize_exec_df(df: pd.DataFrame) -> pd.DataFrame:
+    return _standardize_applicant_common(df, "임원신청", "임원")
+
+
+def standardize_leader_df(df: pd.DataFrame) -> pd.DataFrame:
+    return _standardize_applicant_common(df, "직책자신청", "직책자")
+
+
+def standardize_general_df(df: pd.DataFrame) -> pd.DataFrame:
+    return _standardize_applicant_common(df, "일반신청", "일반")
+
+
+def standardize_blacklist_df(df: pd.DataFrame) -> pd.DataFrame:
+    result = df.copy()
+    rename_map = {}
+    emp_col = infer_column(result, ["사번"])
+    date_col = infer_column(result, ["해당월"])
+    reason_col = infer_column(result, ["사유"]) or infer_column(result, ["미수료"])
+    if emp_col:
+        rename_map[emp_col] = "사번"
+    if date_col:
+        rename_map[date_col] = "해당월"
+    if reason_col:
+        rename_map[reason_col] = "블랙리스트사유"
+    result = result.rename(columns=rename_map)
+    result = ensure_columns(result, ["사번", "해당월", "블랙리스트사유"])
+    result["사번"] = result["사번"].apply(normalize_emp_no)
+    result["해당월"] = safe_str_series(result["해당월"])
+    result["블랙리스트사유"] = safe_str_series(result["블랙리스트사유"]).replace("", "미수료")
+    result["정규화날짜"] = result["해당월"].apply(parse_korean_date)
+    return result.drop_duplicates().copy()
+
+
+def standardize_previous_history_df(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame(columns=["사번", "이름", "과정명", "차수", "선정결과", "신청여부", "선정/미선정사유", "대상집단"])
+    result = df.copy()
+    rename_map = {}
+    if "차수수" in result.columns and "차수" not in result.columns:
+        rename_map["차수수"] = "차수"
+    if "신청" in result.columns and "신청여부" not in result.columns:
+        rename_map["신청"] = "신청여부"
+    result = result.rename(columns=rename_map)
+    result = ensure_columns(result, ["사번", "이름", "과정명", "차수", "선정결과", "신청여부", "선정/미선정사유", "대상집단"])
+    result["사번"] = result["사번"].apply(normalize_emp_no)
+    for c in ["이름", "과정명", "선정결과", "신청여부", "선정/미선정사유", "대상집단"]:
+        result[c] = safe_str_series(result[c])
+    result["차수"] = pd.to_numeric(result["차수"], errors="coerce")
+    return result[["사번", "이름", "과정명", "차수", "선정결과", "신청여부", "선정/미선정사유", "대상집단"]].dropna(subset=["사번"], how="all")
+
+
+def build_applicant_df(exec_df: pd.DataFrame, leader_df: pd.DataFrame, general_df: pd.DataFrame) -> pd.DataFrame:
+    frames = [df.copy() for df in [exec_df, leader_df, general_df] if df is not None and not df.empty]
+    if not frames:
+        return pd.DataFrame()
+    combined = pd.concat(frames, ignore_index=True)
+    combined["사번"] = combined["사번"].apply(normalize_emp_no)
+    combined["신청시간"] = safe_to_datetime(combined["신청시간"])
+    combined["중복신청건수"] = combined.groupby(["사번", "신청과정"])["사번"].transform("size")
+    combined = combined.sort_values(by=["신청시간", "사번"], ascending=[True, True]).copy()
+    return combined.drop_duplicates(subset=["사번", "신청과정"], keep="first").copy()
+
+
+def get_blacklist_hit_reason(emp_no: str, app_time: pd.Timestamp, blacklist_df: pd.DataFrame) -> str:
+    if blacklist_df.empty or not emp_no or pd.isna(app_time):
+        return ""
+    emp_blacklist = blacklist_df[blacklist_df["사번"] == emp_no].copy()
+    for _, row in emp_blacklist.iterrows():
+        bl_date = row.get("정규화날짜", pd.NaT)
+        if pd.notna(bl_date) and bl_date <= app_time <= (bl_date + relativedelta(months=6)):
+            base_reason = clean_text(row.get("블랙리스트사유", "")) or "미수료"
+            return f"{base_reason} 이력으로 해당월 기준 6개월간 제외"
+    return ""
+
+
+def build_prev_history_features(prev_history_df: pd.DataFrame) -> pd.DataFrame:
+    base_columns = [
+        "사번", "지난3차수정보", "지난3차수차수", "지난3차수합",
+        "최근3차수선발횟수", "최근3차수신청횟수", "최근3차수동일과정횟수"
+    ]
+    if prev_history_df is None or prev_history_df.empty:
+        return pd.DataFrame(columns=base_columns)
+    df = prev_history_df.copy()
+    df["차수"] = pd.to_numeric(df["차수"], errors="coerce")
+    df = df.dropna(subset=["사번"]).copy()
+    df = df.sort_values(by=["사번", "차수"], ascending=[True, False])
+    rows = []
+    for emp_no, grp in df.groupby("사번", sort=False):
+        grp = grp.sort_values(by="차수", ascending=False).copy()
+        top3_rows = grp.head(3).copy()
+
+        unique_round_rows = []
+        seen_rounds = set()
+        for _, row in grp.iterrows():
+            round_val = pd.to_numeric(row.get("차수"), errors="coerce")
+            if pd.isna(round_val):
+                continue
+            round_num = int(round_val)
+            if round_num in seen_rounds:
+                continue
+            seen_rounds.add(round_num)
+            unique_round_rows.append(row.to_dict())
+            if len(unique_round_rows) >= 3:
+                break
+
+        round_only = [str(int(r.get("차수"))) for r in unique_round_rows if pd.notna(pd.to_numeric(r.get("차수"), errors="coerce"))]
+        parts = []
+        for row in unique_round_rows:
+            piece_items = []
+            round_num = pd.to_numeric(row.get("차수"), errors="coerce")
+            if pd.notna(round_num):
+                piece_items.append(f"{int(round_num)}차")
+            if clean_text(row.get("과정명", "")):
+                piece_items.append(clean_text(row.get("과정명", "")))
+            if clean_text(row.get("선정결과", "")):
+                piece_items.append(clean_text(row.get("선정결과", "")))
+            if piece_items:
+                parts.append(" / ".join(piece_items))
+
+        selected_count = int(top3_rows["선정결과"].fillna("").astype(str).eq("선발").sum())
+        applied_count = int(top3_rows["신청여부"].fillna("").astype(str).str.upper().eq("Y").sum())
+        same_course_count = int(top3_rows["과정명"].fillna("").astype(str).str.strip().ne("").sum())
+
+        rows.append({
+            "사번": emp_no,
+            "지난3차수정보": " | ".join(parts),
+            "지난3차수차수": ",".join(round_only),
+            "지난3차수합": float(len(round_only)),
+            "최근3차수선발횟수": selected_count,
+            "최근3차수신청횟수": applied_count,
+            "최근3차수동일과정횟수": same_course_count,
+        })
+    return pd.DataFrame(rows)
+
+
+def calculate_priority_score(row: pd.Series) -> int:
+    score = 0
+    role_type = clean_text(row.get("대상유형", ""))
+    gst_recent = pd.to_numeric(row.get("GST(최근)"), errors="coerce")
+    gst_3year = pd.to_numeric(row.get("GST(3년)"), errors="coerce")
+    work_location_type = clean_text(row.get("근무구분", ""))
+    prev_selected = pd.to_numeric(row.get("최근3차수선발횟수"), errors="coerce")
+    prev_hist_count = pd.to_numeric(row.get("지난3차수합"), errors="coerce")
+    duplicate_count = pd.to_numeric(row.get("중복신청건수"), errors="coerce")
+
+    if role_type == "임원":
+        score += 100
+    elif role_type == "직책자":
+        score += 80
+    else:
+        score += 50
+
+    if pd.notna(gst_3year) and gst_3year > 0:
+        score += 20
+    if pd.notna(gst_recent) and gst_recent > 0:
+        score += int(gst_recent) * 5
+    if work_location_type == "해외":
+        score += 10
+    if pd.notna(prev_hist_count) and prev_hist_count == 0:
+        score += 10
+    if pd.notna(prev_selected) and prev_selected >= 2:
+        score -= 30
+    if pd.notna(duplicate_count) and duplicate_count > 1:
+        score -= 10
+    return score
+
+
+def build_validation_flags(row: pd.Series) -> tuple[bool, str]:
+    reasons = []
+    emp_no = clean_text(row.get("사번", ""))
+    app_time = pd.to_datetime(row.get("신청시간"), errors="coerce")
+    course = clean_text(row.get("신청과정", ""))
+    gst_recent = pd.to_numeric(row.get("GST(최근)"), errors="coerce")
+    gst_3year = pd.to_numeric(row.get("GST(3년)"), errors="coerce")
+    role_type = clean_text(row.get("대상유형", ""))
+    has_hr_match = any(clean_text(row.get(col, "")) for col in ["한글", "직위명", "직책명", "근무지명(JOB)", "조직명", "부문/본부"]) or pd.notna(gst_recent) or pd.notna(gst_3year)
+
+    if not emp_no or not emp_no.isdigit() or len(emp_no) < 5:
+        reasons.append("사번 형식 이상")
+    if clean_text(row.get("사번이상", "")) == "Y":
+        reasons.append("사번 정규화 실패")
+    if pd.isna(app_time):
+        reasons.append("신청시간 파싱 실패")
+    if course == "기타":
+        reasons.append("과정 미분류")
+    if not has_hr_match:
+        reasons.append("인사DB 미매칭")
+    if (pd.notna(gst_recent) and not (0 <= gst_recent <= 10)) or (pd.notna(gst_3year) and not (0 <= gst_3year <= 10)):
+        reasons.append("GST 값 이상")
+    if clean_text(row.get("블랙리스트사유적중", "")):
+        reasons.append("블랙리스트 대상")
+    if pd.to_numeric(row.get("중복신청건수"), errors="coerce") > 1:
+        reasons.append("중복 신청")
+    if role_type == "비직책자" and clean_text(row.get("직위명", "")) == "" and clean_text(row.get("직책명", "")) == "":
+        reasons.append("직위/직책 판정 확인 필요")
+
+    return (len(reasons) > 0, " | ".join(reasons))
+
+
+def evaluate_one_applicant(row: pd.Series, blacklist_df: pd.DataFrame) -> dict:
+    emp_no = normalize_emp_no(row.get("사번", ""))
+    app_time = pd.to_datetime(row.get("신청시간"), errors="coerce")
+    course = clean_text(row.get("신청과정", ""))
+    role_code, role_type = get_role_priority(row.get("직위명", ""), row.get("직책명", ""))
+    work_location = clean_text(row.get("근무지명(JOB)", ""))
+    work_location_type = classify_work_location(work_location)
+    gst_recent = pd.to_numeric(row.get("GST(최근)"), errors="coerce")
+    gst_3year = pd.to_numeric(row.get("GST(3년)"), errors="coerce")
+    blacklist_reason = get_blacklist_hit_reason(emp_no, app_time, blacklist_df)
+
+    base = {
+        "사번": emp_no,
+        "성명": clean_text(row.get("한글", "")) or clean_text(row.get("성명", "")) or "미확인",
+        "이메일": clean_text(row.get("이메일", "")) or clean_text(row.get("회사메일", "")),
+        "연락처": clean_text(row.get("연락처", "")) or clean_text(row.get("휴대폰번호", "")),
+        "신청구분": clean_text(row.get("신청구분", "")),
+        "신청원본유형": clean_text(row.get("신청원본유형", "")),
+        "신청시간": app_time,
+        "신청과정": course,
+        "원본과정": clean_text(row.get("원본과정", "")),
+        "차순위희망과정": clean_text(row.get("차순위희망과정", "")),
+        "대체지원여부": clean_text(row.get("대체지원여부", "")),
+        "대상유형": role_type,
+        "순위코드": role_code,
+        "직급명": clean_text(row.get("직급명", "")),
+        "직위명": clean_text(row.get("직위명", "")),
+        "직책명": clean_text(row.get("직책명", "")),
+        "조직명": clean_text(row.get("조직명", "")),
+        "부문/본부": clean_text(row.get("부문/본부", "")),
+        "근무지명(JOB)": work_location,
+        "근무구분": work_location_type,
+        "회사메일": clean_text(row.get("회사메일", "")),
+        "내선번호": clean_text(row.get("내선번호", "")),
+        "휴대폰번호": clean_text(row.get("휴대폰번호", "")),
+        "GST(최근)": gst_recent,
+        "GST(3년)": gst_3year,
+        "정원": int(COURSE_CAPACITY.get(course, 0)),
+        "지난3차수정보": clean_text(row.get("지난3차수정보", "")),
+        "지난3차수차수": clean_text(row.get("지난3차수차수", "")),
+        "지난3차수합": pd.to_numeric(row.get("지난3차수합"), errors="coerce"),
+        "최근3차수선발횟수": pd.to_numeric(row.get("최근3차수선발횟수"), errors="coerce"),
+        "최근3차수신청횟수": pd.to_numeric(row.get("최근3차수신청횟수"), errors="coerce"),
+        "중복신청건수": pd.to_numeric(row.get("중복신청건수"), errors="coerce"),
+        "블랙리스트사유적중": blacklist_reason,
+        "사번원본": clean_text(row.get("사번원본", "")),
+        "사번이상": clean_text(row.get("사번이상", "")),
+    }
+
+    base["선발우선그룹"] = get_priority_group_by_role(role_type)
+    validation_flag, validation_reason = build_validation_flags(pd.Series(base | {
+        "한글": row.get("한글", ""),
+        "직위명": row.get("직위명", ""),
+        "직책명": row.get("직책명", ""),
+        "조직명": row.get("조직명", ""),
+        "부문/본부": row.get("부문/본부", ""),
+        "근무지명(JOB)": row.get("근무지명(JOB)", ""),
+        "사번이상": row.get("사번이상", ""),
+    }))
+    base["검증필요"] = validation_flag
+    base["검증사유"] = validation_reason
+
+    if clean_text(base.get("사번이상", "")) == "Y":
+        first_status, first_reason, priority_group = "제외", "사번 형식 이상으로 자동 제외", 99
+    elif blacklist_reason:
+        first_status, first_reason, priority_group = "제외", blacklist_reason, 99
+    elif course == "기타":
+        first_status, first_reason, priority_group = "수동확인", "과정명을 분류하지 못했습니다.", 98
+    elif validation_flag and "인사DB 미매칭" in validation_reason:
+        first_status, first_reason, priority_group = "수동확인", "인사DB 매칭 실패", 97
+    elif course == "민병철유폰":
+        if role_type in ["임원", "직책자"]:
+            first_status, first_reason, priority_group = "선발검토", f"{get_role_priority_text(role_type)} 자동 승인", get_priority_group_by_role(role_type)
+        elif pd.notna(gst_3year) and gst_3year > 0:
+            first_status, first_reason, priority_group = "선발검토", f"최근 3년 내 GST 성적 보유 / {get_role_priority_text(role_type)} 반영", get_priority_group_by_role(role_type, 2)
+        else:
+            first_status, first_reason, priority_group = "제외", "최근 3년 내 GST 성적 없음", 99
+    elif course == "튜터링":
+        if pd.notna(gst_3year) and gst_3year > 0:
+            first_status, first_reason, priority_group = "선발검토", f"최근 3년 내 GST 성적 보유 / {get_role_priority_text(role_type)} 우선순위 반영", get_priority_group_by_role(role_type, 2)
+        else:
+            first_status, first_reason, priority_group = "제외", "최근 3년 내 GST 성적 없음", 99
+    elif course == "링글":
+        if role_type == "임원":
+            first_status, first_reason, priority_group = "선발검토", f"{get_role_priority_text(role_type)} 자동 승인", get_priority_group_by_role(role_type)
+        else:
+            required_level = 5 if work_location_type == "해외" else 6
+            if pd.notna(gst_recent) and gst_recent >= required_level:
+                first_status, first_reason, priority_group = "선발검토", f"{work_location_type} 근무자 기준 GST 레벨 {required_level} 이상 충족 / {get_role_priority_text(role_type)} 우선순위 반영", get_priority_group_by_role(role_type, 2)
+            else:
+                first_status, first_reason, priority_group = "제외", f"{work_location_type} 근무자 기준 GST 레벨 {required_level} 미달", 99
+    elif course == "스픽":
+        if role_type in ["임원", "직책자"]:
+            first_status, first_reason, priority_group = "선발검토", f"{get_role_priority_text(role_type)} 자동 승인", get_priority_group_by_role(role_type)
+        elif pd.notna(gst_3year) and gst_3year > 0:
+            first_status, first_reason, priority_group = "선발검토", f"최근 3년 내 GST 성적 보유 / {get_role_priority_text(role_type)} 우선선발", get_priority_group_by_role(role_type, 2)
+        elif pd.notna(gst_recent) and gst_recent > 0:
+            first_status, first_reason, priority_group = "선발검토", f"GST 성적 보유 / {get_role_priority_text(role_type)} 우선순위 반영", get_priority_group_by_role(role_type, 3)
+        else:
+            first_status, first_reason, priority_group = "제외", "GST 성적 없음", 99
+    else:
+        first_status, first_reason, priority_group = "수동확인", "판정 규칙 미정", 98
+
+    base["1차판정"] = first_status
+    base["1차판정사유"] = first_reason
+    base["선발우선그룹"] = priority_group
+    base["우선순위점수"] = calculate_priority_score(pd.Series(base))
+    return base
+
+
+def run_selection_engine(hr_df, exec_df, leader_df, general_df, blacklist_df, prev_history_df):
+    applicant_df = build_applicant_df(exec_df, leader_df, general_df)
+    if applicant_df.empty:
+        return pd.DataFrame()
+    hr_df = standardize_hr_df(hr_df if hr_df is not None else pd.DataFrame())
+    blacklist_df = standardize_blacklist_df(blacklist_df if blacklist_df is not None else pd.DataFrame())
+    prev_features = build_prev_history_features(prev_history_df if prev_history_df is not None else pd.DataFrame())
+
+    merged = applicant_df.merge(hr_df, on="사번", how="left")
+    merged = merged.merge(prev_features, on="사번", how="left")
+    merged["성명"] = merged.apply(lambda x: clean_text(x["성명"]) if clean_text(x.get("성명", "")) else clean_text(x.get("한글", "")), axis=1)
+    merged["이메일"] = merged.apply(lambda x: clean_text(x["이메일"]) if clean_text(x.get("이메일", "")) else clean_text(x.get("회사메일", "")), axis=1)
+
+    result_df = pd.DataFrame([evaluate_one_applicant(row, blacklist_df) for _, row in merged.iterrows()])
+    if result_df.empty:
+        return result_df
+
+    result_df["최종결과"] = ""
+    result_df["최종사유"] = ""
+    result_df["리스크유형"] = ""
+
+    for course_name, capacity in COURSE_CAPACITY.items():
+        group = result_df[result_df["신청과정"] == course_name].copy()
+        if group.empty:
+            continue
+        group = group.sort_values(
+            by=["1차판정", "선발우선그룹", "우선순위점수", "신청시간", "사번"],
+            ascending=[True, True, False, True, True],
+        )
+        selected_count = 0
+        for idx, row in group.iterrows():
+            first_status = clean_text(row.get("1차판정", ""))
+            first_reason = clean_text(row.get("1차판정사유", ""))
+            if first_status == "제외":
+                result_df.at[idx, "최종결과"] = "제외"
+                result_df.at[idx, "최종사유"] = first_reason
+                continue
+            if first_status == "수동확인":
+                result_df.at[idx, "최종결과"] = "수동확인"
+                result_df.at[idx, "최종사유"] = first_reason
+                continue
+            if selected_count < capacity:
+                result_df.at[idx, "최종결과"] = "선발"
+                result_df.at[idx, "최종사유"] = f"{first_reason} / 우선순위점수 {int(row.get('우선순위점수', 0))} / 정원 {capacity}명 이내"
+                selected_count += 1
+            else:
+                result_df.at[idx, "최종결과"] = "후순위"
+                result_df.at[idx, "최종사유"] = f"정원 초과로 후순위 / {first_reason} / 우선순위점수 {int(row.get('우선순위점수', 0))}"
+
+        if len(group) > capacity and capacity > 0:
+            boundary_rows = group.iloc[max(0, capacity - 2): min(len(group), capacity + 2)]
+            result_df.loc[boundary_rows.index, "리스크유형"] = result_df.loc[boundary_rows.index, "리스크유형"].replace("", "정원 경계선")
+
+    other_mask = ~result_df["신청과정"].isin(list(COURSE_CAPACITY.keys()))
+    if other_mask.any():
+        result_df.loc[other_mask, "최종결과"] = result_df.loc[other_mask, "1차판정"].replace("선발검토", "수동확인")
+        result_df.loc[other_mask, "최종사유"] = result_df.loc[other_mask, "1차판정사유"]
+
+    result_df.loc[result_df["검증필요"], "리스크유형"] = result_df.loc[result_df["검증필요"], "검증사유"]
+    result_df["수동최종결과"] = result_df["최종결과"]
+    result_df["수동사유"] = result_df["최종사유"]
+    return ensure_row_id(result_df.sort_values(by=["신청과정", "신청시간", "사번"], ascending=[True, True, True]).reset_index(drop=True))
+
+
+def build_manual_review_df(result_df: pd.DataFrame) -> pd.DataFrame:
+    df = ensure_row_id(result_df.copy())
+    cols = [
+        "__row_id", "사번", "성명", "신청구분", "신청원본유형", "신청시간", "신청과정", "정원", "대상유형",
+        "조직명", "부문/본부", "근무지명(JOB)", "GST(최근)", "GST(3년)", "우선순위점수", "리스크유형",
+        "1차판정", "1차판정사유", "최종결과", "최종사유", "수동최종결과", "수동사유", "지난3차수차수", "지난3차수정보"
+    ]
+    return df[[c for c in cols if c in df.columns]].copy()
+
+
+def merge_manual_result(original_df: pd.DataFrame, edited_df: pd.DataFrame) -> pd.DataFrame:
+    base_df = ensure_row_id(original_df.copy())
+    edit_df = ensure_row_id(edited_df.copy())
+    if edit_df.empty or "__row_id" not in edit_df.columns:
+        return base_df
+    edit_small = edit_df[[c for c in ["__row_id", "수동최종결과", "수동사유"] if c in edit_df.columns]].drop_duplicates(subset=["__row_id"], keep="last").copy()
+    merged = base_df.merge(edit_small, on="__row_id", how="left", suffixes=("", "_edited"))
+    if "수동최종결과_edited" in merged.columns:
+        merged["수동최종결과"] = merged["수동최종결과_edited"].where(
+            merged["수동최종결과_edited"].notna() & (merged["수동최종결과_edited"].astype(str).str.strip() != ""), merged["수동최종결과"]
+        )
+    if "수동사유_edited" in merged.columns:
+        merged["수동사유"] = merged["수동사유_edited"].where(
+            merged["수동사유_edited"].notna() & (merged["수동사유_edited"].astype(str).str.strip() != ""), merged["수동사유"]
+        )
+    merged = merged.drop(columns=["수동최종결과_edited", "수동사유_edited"], errors="ignore")
+    merged["수동최종결과"] = merged["수동최종결과"].replace("", pd.NA).fillna(merged["최종결과"])
+    merged["수동사유"] = merged["수동사유"].replace("", pd.NA).fillna(merged["최종사유"])
+    return ensure_row_id(merged)
+
+
+def save_auto_result(df: pd.DataFrame) -> None:
+    if df is not None and not df.empty:
+        ensure_row_id(df).to_csv(AUTO_RESULT_SAVE_PATH, index=False, encoding="utf-8-sig")
+
+
+def load_auto_result() -> pd.DataFrame:
+    if AUTO_RESULT_SAVE_PATH.exists():
+        try:
+            df = pd.read_csv(AUTO_RESULT_SAVE_PATH, encoding="utf-8-sig")
+        except Exception:
+            try:
+                df = pd.read_csv(AUTO_RESULT_SAVE_PATH, encoding="cp949")
+            except Exception:
+                return pd.DataFrame()
+        if "신청시간" in df.columns:
+            df["신청시간"] = pd.to_datetime(df["신청시간"], errors="coerce")
+        if "사번" in df.columns:
+            df["사번"] = df["사번"].apply(normalize_emp_no).astype(str)
+        return normalize_display_df(ensure_row_id(df))
+    return pd.DataFrame()
+
+
+def save_manual_result(df: pd.DataFrame) -> None:
+    if df is not None and not df.empty:
+        ensure_row_id(df).to_csv(MANUAL_RESULT_SAVE_PATH, index=False, encoding="utf-8-sig")
+
+
+def load_manual_result() -> pd.DataFrame:
+    if MANUAL_RESULT_SAVE_PATH.exists():
+        try:
+            df = pd.read_csv(MANUAL_RESULT_SAVE_PATH, encoding="utf-8-sig")
+        except Exception:
+            try:
+                df = pd.read_csv(MANUAL_RESULT_SAVE_PATH, encoding="cp949")
+            except Exception:
+                return pd.DataFrame()
+        if "신청시간" in df.columns:
+            df["신청시간"] = pd.to_datetime(df["신청시간"], errors="coerce")
+        return ensure_row_id(df)
+    return pd.DataFrame()
+
+
+def filter_result_df(df: pd.DataFrame, selected_course: str, selected_status: str, selected_risk: str, search_text: str) -> pd.DataFrame:
+    result = df.copy()
+    if result.empty:
+        return result
+    if selected_course != "전체":
+        result = result[result["신청과정"] == selected_course].copy()
+    if selected_status != "전체":
+        result = result[result["수동최종결과"] == selected_status].copy()
+    if selected_risk != "전체":
+        if selected_risk == "리스크 있음":
+            result = result[result["리스크유형"].fillna("").astype(str).str.strip() != ""].copy()
+        else:
+            result = result[result["리스크유형"].fillna("").astype(str).str.contains(selected_risk, na=False)].copy()
+    if search_text.strip():
+        keyword = search_text.strip()
+        result = result[
+            result["사번"].fillna("").astype(str).str.contains(keyword, na=False)
+            | result["성명"].fillna("").astype(str).str.contains(keyword, na=False)
+            | result["조직명"].fillna("").astype(str).str.contains(keyword, na=False)
+        ].copy()
+    return result
+
+
+def summarize_upload_quality(name: str, raw_df: pd.DataFrame, std_df: pd.DataFrame, required_cols: list[str]) -> dict:
+    missing = [c for c in required_cols if c not in std_df.columns]
+    rows = len(raw_df) if raw_df is not None else 0
+    warnings = []
+    if std_df is not None and not std_df.empty:
+        if "사번" in std_df.columns:
+            invalid_emp = int(std_df["사번"].fillna("").astype(str).str.len().lt(5).sum())
+            if invalid_emp > 0:
+                warnings.append(f"사번 이상 {invalid_emp}건")
+        if "신청과정" in std_df.columns:
+            other_count = int((std_df["신청과정"] == "기타").sum())
+            if other_count > 0:
+                warnings.append(f"과정 미분류 {other_count}건")
+    return {
+        "파일명": name,
+        "업로드": "완료" if raw_df is not None and not raw_df.empty else "없음",
+        "행수": rows,
+        "필수컬럼": "정상" if not missing else f"누락 {len(missing)}개",
+        "경고": " / ".join(warnings) if warnings else "-",
+    }
+
+
+def build_quality_issue_df(applicant_df: pd.DataFrame, hr_df: pd.DataFrame) -> pd.DataFrame:
+    issues = []
+    if applicant_df is None or applicant_df.empty:
+        return pd.DataFrame(columns=["유형", "사번", "성명", "신청과정", "상세"])
+    hr_emp_set = set(hr_df["사번"].dropna().astype(str)) if hr_df is not None and not hr_df.empty else set()
+    for _, row in applicant_df.iterrows():
+        emp = clean_text(row.get("사번", ""))
+        name = clean_text(row.get("성명", ""))
+        course = clean_text(row.get("신청과정", ""))
+        if not emp or len(emp) < 5:
+            issues.append({"유형": "사번 형식 이상", "사번": emp, "성명": name, "신청과정": course, "상세": "사번 길이 또는 숫자 형식 확인 필요"})
+        if pd.isna(pd.to_datetime(row.get("신청시간"), errors="coerce")):
+            issues.append({"유형": "신청시간 파싱 실패", "사번": emp, "성명": name, "신청과정": course, "상세": "시작/완료 시간 포맷 확인 필요"})
+        if course == "기타":
+            issues.append({"유형": "과정 미분류", "사번": emp, "성명": name, "신청과정": clean_text(row.get("원본과정", "")), "상세": "과정명 alias 추가 필요"})
+        if hr_emp_set and emp not in hr_emp_set:
+            issues.append({"유형": "인사DB 미매칭", "사번": emp, "성명": name, "신청과정": course, "상세": "인사DB 사번 확인 필요"})
+        if pd.to_numeric(row.get("중복신청건수"), errors="coerce") > 1:
+            issues.append({"유형": "중복 신청", "사번": emp, "성명": name, "신청과정": course, "상세": f"동일 과정 중복신청 {int(row.get('중복신청건수', 0))}건"})
+    return pd.DataFrame(issues)
+
+
+def build_role_result_summary_df(df: pd.DataFrame, result_col: str) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame(columns=["신청과정", "대상유형", result_col, "인원수"])
+    temp = df.copy()
+    temp = ensure_columns(temp, ["신청과정", "대상유형", result_col])
+    temp["신청과정"] = temp["신청과정"].fillna("").astype(str).str.strip()
+    temp["대상유형"] = temp["대상유형"].fillna("").astype(str).str.strip().replace("", "미확인")
+    temp[result_col] = temp[result_col].fillna("").astype(str).str.strip().replace("", "미확인")
+    return temp.groupby(["신청과정", "대상유형", result_col], dropna=False).size().reset_index(name="인원수").sort_values(by=["신청과정", "대상유형", result_col]).reset_index(drop=True)
+
+
+def build_org_summary_df(result_df: pd.DataFrame, final_col: str = "수동최종결과") -> pd.DataFrame:
+    if result_df.empty:
+        return pd.DataFrame()
+    df = result_df.copy()
+    for c in ["신청과정", "조직명"]:
+        if c not in df.columns:
+            df[c] = ""
+    df["조직명"] = df["조직명"].fillna("").astype(str).str.strip().replace("", "미확인")
+    rows = []
+    for (course, org_name), grp in df.groupby(["신청과정", "조직명"], sort=False):
+        rows.append({
+            "신청과정": course,
+            "조직명": org_name,
+            "신청합계": len(grp),
+            "선발": int((grp[final_col] == "선발").sum()),
+            "후순위": int((grp[final_col] == "후순위").sum()),
+            "제외": int((grp[final_col] == "제외").sum()),
+            "수동확인": int((grp[final_col] == "수동확인").sum()),
+        })
+    return pd.DataFrame(rows).sort_values(by=["신청과정", "신청합계", "조직명"], ascending=[True, False, True]).reset_index(drop=True)
+
+
+def build_division_summary_df(result_df: pd.DataFrame, final_col: str = "수동최종결과") -> pd.DataFrame:
+    if result_df.empty:
+        return pd.DataFrame()
+    df = result_df.copy()
+    for c in ["신청과정", "부문/본부"]:
+        if c not in df.columns:
+            df[c] = ""
+    df["부문/본부"] = df["부문/본부"].fillna("").astype(str).str.strip().replace("", "미확인")
+    rows = []
+    for (course, division), grp in df.groupby(["신청과정", "부문/본부"], sort=False):
+        rows.append({
+            "신청과정": course,
+            "부문/본부": division,
+            "신청합계": len(grp),
+            "선발": int((grp[final_col] == "선발").sum()),
+            "후순위": int((grp[final_col] == "후순위").sum()),
+            "제외": int((grp[final_col] == "제외").sum()),
+            "수동확인": int((grp[final_col] == "수동확인").sum()),
+        })
+    return pd.DataFrame(rows).sort_values(by=["신청과정", "신청합계", "부문/본부"], ascending=[True, False, True]).reset_index(drop=True)
+
+
+def build_download_export_df(final_df: pd.DataFrame, hr_df: pd.DataFrame, prev_history_df: pd.DataFrame) -> pd.DataFrame:
+    columns = [
+        "사번", "이름", "조직명_당시", "부문본부_당시", "근무지명(JOB)_당시", "과정명", "과정명[LMS]", "과정명.1", "차수",
+        "대상집단", "신청여부", "선정결과", "선정/미선정사유", "회사전화", "휴대전화", "이메일", "이메일.1",
+        " GST", "GST(3ys)", "이름.1", "확인", "지난3차수정보", "합", "대체", "건주인원"
+    ]
+    if final_df.empty:
+        return pd.DataFrame(columns=columns)
+
+    hr_df = standardize_hr_df(hr_df if hr_df is not None else pd.DataFrame())
+    prev_features = build_prev_history_features(prev_history_df if prev_history_df is not None else pd.DataFrame())
+
+    hr_small = hr_df[["사번", "한글", "조직명", "부문/본부", "근무지명(JOB)", "내선번호", "휴대폰번호", "회사메일", "GST(최근)", "GST(3년)"]].drop_duplicates(subset=["사번"], keep="first").copy()
+
+    export_df = final_df.copy()
+
+    # 이전 실행 결과나 저장본에 과거이력 컬럼이 이미 섞여 있으면 merge 후 _x/_y 컬럼이 생겨 KeyError가 날 수 있으므로
+    # 다운로드 생성 시에는 기준 컬럼을 먼저 제거하고 다시 안전하게 붙입니다.
+    export_df = export_df.drop(columns=[
+        "지난3차수정보", "지난3차수합", "최근3차수선발횟수", "최근3차수신청횟수", "최근3차수동일과정횟수"
+    ], errors="ignore")
+
+    export_df = export_df.merge(hr_small, on="사번", how="left", suffixes=("", "_hr"))
+
+    prev_small = ensure_columns(prev_features.copy(), ["사번", "지난3차수정보", "지난3차수합"])[["사번", "지난3차수정보", "지난3차수합"]].copy()
+    export_df = export_df.merge(prev_small, on="사번", how="left")
+
+    export_df = ensure_columns(export_df, [
+        "성명", "조직명", "부문/본부", "근무지명(JOB)", "신청과정", "원본과정", "대상유형",
+        "수동최종결과", "수동사유", "내선번호", "휴대폰번호", "회사메일", "GST(최근)", "GST(3년)",
+        "대체지원여부", "지난3차수정보", "지난3차수합"
+    ])
+
+    export_df["이름"] = export_df.apply(lambda x: clean_text(x.get("한글", "")) or clean_text(x.get("성명", "")), axis=1)
+    export_df["조직명_당시"] = export_df["조직명"]
+    export_df["부문본부_당시"] = export_df["부문/본부"]
+    export_df["근무지명(JOB)_당시"] = export_df["근무지명(JOB)"]
+    export_df["과정명"] = export_df["신청과정"]
+    lms_course_map = {
+        "스픽": "[2026 전사] AI English - 스픽",
+        "민병철유폰": "[2026 전사] Phone English - 민병철유폰",
+        "튜터링": "[2026 전사] Phone English - 튜터링",
+        "링글": "[2026 전사] Virtual English - 링글",
+    }
+    export_df["과정명[LMS]"] = export_df["신청과정"].map(lms_course_map).fillna("")
+    export_df["과정명.1"] = export_df["원본과정"]
+    export_df["차수"] = 2026
+    export_df["대상집단"] = export_df["대상유형"]
+    export_df["신청여부"] = "Y"
+    export_df["선정결과"] = export_df["수동최종결과"]
+    export_df["선정/미선정사유"] = export_df["수동사유"]
+    export_df["회사전화"] = export_df["내선번호"]
+    export_df["휴대전화"] = export_df["휴대폰번호"]
+    export_df["이메일"] = export_df["회사메일"]
+    export_df["이메일.1"] = export_df["이메일"]
+    export_df[" GST"] = export_df["GST(최근)"].apply(format_gst_display)
+    export_df["GST(3ys)"] = export_df["GST(3년)"].apply(format_gst_display)
+    export_df["이름.1"] = export_df["이름"]
+    export_df["확인"] = ""
+    export_df["지난3차수정보"] = export_df["지난3차수정보"].fillna("")
+    export_df["합"] = pd.to_numeric(export_df["지난3차수합"], errors="coerce")
+    export_df["대체"] = export_df["대체지원여부"]
+    export_df["건주인원"] = export_df.groupby(["과정명", "조직명_당시"], dropna=False)["사번"].transform("count")
+
+    export_df = ensure_columns(export_df, columns)[columns].copy()
+    return export_df
+
+
+def build_download_checklist(export_df: pd.DataFrame, final_df: pd.DataFrame) -> pd.DataFrame:
+    if export_df.empty:
+        return pd.DataFrame(columns=["점검항목", "건수", "설명"])
+    rows = [
+        {"점검항목": "이메일 누락", "건수": int(export_df["이메일"].fillna("").astype(str).str.strip().eq("").sum()), "설명": "업체 연락용 회사메일 확인"},
+        {"점검항목": "휴대전화 누락", "건수": int(export_df["휴대전화"].fillna("").astype(str).str.strip().eq("").sum()), "설명": "교육업체 연락용 연락처 확인"},
+        {"점검항목": "조직명 미확인", "건수": int(export_df["조직명_당시"].fillna("").astype(str).str.strip().eq("").sum()), "설명": "조직 분포 보고용"},
+        {"점검항목": "수동확인 미처리", "건수": int((final_df["수동최종결과"] == "수동확인").sum()), "설명": "다운로드 전 최종확정 필요"},
+    ]
+    return pd.DataFrame(rows)
+
+
+def render_topbar(saved_infos: dict):
+    upload_done = sum(1 for v in saved_infos.values() if v)
+    auto_exists = AUTO_RESULT_SAVE_PATH.exists()
+    manual_exists = MANUAL_RESULT_SAVE_PATH.exists()
+    now_text = dt.datetime.now().strftime("%Y-%m-%d %H:%M")
+    st.markdown(
+        f"""
+        <div class="topbar">
+            <div class="topbar-title">2026 어학과정 자동 선발 시스템</div>
+            <div class="topbar-sub">고정 선발 기준에 맞춰 업로드 → 품질점검 → 자동 선발 → 예외 검토 → 결과 배포까지 운영할 수 있는 콘솔입니다.</div>
+            <div class="status-strip">
+                <span class="status-pill">현재 시각 {now_text}</span>
+                <span class="status-pill">업로드 파일 {upload_done}/6</span>
+                <span class="status-pill">자동선발 {'완료' if auto_exists else '대기'}</span>
+                <span class="status-pill">수동수정 {'저장됨' if manual_exists else '미저장'}</span>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_panel_header(title: str, desc: str = ""):
+    st.markdown(
+        f"""
+        <div class="section-head">
+            <div>
+                <div class="section-title">{title}</div>
+                <div class="section-desc">{desc}</div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_kpi(label: str, value: str, sub: str, tone: str):
+    st.markdown(
+        f"""
+        <div class="kpi-card kpi-{tone}">
+            <div class="kpi-label">{label}</div>
+            <div class="kpi-value">{value}</div>
+            <div class="kpi-sub">{sub}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def style_summary_by_role(df: pd.DataFrame):
+    def apply_row_style(row):
+        role = clean_text(row.get("대상유형", ""))
+        if role == "임원":
+            bg = "#FEF3C7"
+        elif role == "직책자":
+            bg = "#DBEAFE"
+        elif role == "비직책자":
+            bg = "#DCFCE7"
+        else:
+            bg = "#F9FAFB"
+        return [f"background-color: {bg};" for _ in row.index]
+    return df.style.apply(apply_row_style, axis=1)
+
+
+def build_course_role_kpi_df(df: pd.DataFrame, result_col: str) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame(columns=["신청과정", "대상유형", "총신청", "선발", "선정비율(%)", "선발기준", "초과여부"])
+    temp = ensure_columns(df.copy(), ["신청과정", "대상유형", result_col])
+    temp["신청과정"] = temp["신청과정"].fillna("").astype(str).str.strip()
+    temp["대상유형"] = temp["대상유형"].fillna("").astype(str).str.strip().replace("", "미확인")
+    rows = []
+    for (course, role), grp in temp.groupby(["신청과정", "대상유형"], dropna=False):
+        total = len(grp)
+        selected = int(grp[result_col].fillna("").astype(str).eq("선발").sum())
+        threshold = 30 if (course in ["민병철유폰", "스픽"] and role == "직책자") else None
+        rows.append({
+            "신청과정": course,
+            "대상유형": role,
+            "총신청": total,
+            "선발": selected,
+            "선정비율(%)": round((selected / total) * 100, 1) if total else 0.0,
+            "선발기준": threshold if threshold is not None else "",
+            "초과여부": "초과" if threshold is not None and selected > threshold else ("정상" if threshold is not None else ""),
+        })
+    return pd.DataFrame(rows).sort_values(by=["신청과정", "대상유형"]).reset_index(drop=True)
+
+
+def render_course_role_kpi(summary_df: pd.DataFrame, caption: str):
+    st.caption(caption)
+    if summary_df is None or summary_df.empty:
+        st.info("대상유형별 KPI 데이터가 없습니다.")
+        return
+    course_order = [c for c in COURSE_CAPACITY.keys() if c in summary_df["신청과정"].dropna().astype(str).unique().tolist()]
+    other_courses = [c for c in summary_df["신청과정"].dropna().astype(str).unique().tolist() if c not in course_order]
+    for course in course_order + other_courses:
+        course_df = summary_df[summary_df["신청과정"] == course].copy()
+        if course_df.empty:
+            continue
+        st.markdown(f"**{course}**")
+        st.dataframe(style_summary_by_role(course_df), use_container_width=True, hide_index=True)
+
+
+def render_course_split_summary(summary_df: pd.DataFrame, title_prefix: str = ""):
+    if summary_df is None or summary_df.empty:
+        st.info("요약 데이터가 없습니다.")
+        return
+    course_order = [c for c in COURSE_CAPACITY.keys() if c in summary_df["신청과정"].dropna().astype(str).unique().tolist()]
+    other_courses = [c for c in summary_df["신청과정"].dropna().astype(str).unique().tolist() if c not in course_order]
+    for course in course_order + other_courses:
+        course_df = summary_df[summary_df["신청과정"] == course].copy()
+        if course_df.empty:
+            continue
+        st.markdown(f"**{title_prefix}{course}**")
+        st.dataframe(style_summary_by_role(course_df), use_container_width=True, hide_index=True)
+
+
+def style_result_table(df: pd.DataFrame):
+    def apply_row_style(row):
+        status = clean_text(row.get("수동최종결과", row.get("최종결과", "")))
+        if status == "선발":
+            bg = BRAND["soft_green"]
+        elif status == "후순위":
+            bg = BRAND["soft_yellow"]
+        elif status == "제외":
+            bg = BRAND["soft_red"]
+        elif status == "수동확인":
+            bg = BRAND["soft_purple"]
+        else:
+            bg = "#FFFFFF"
+        return [f"background-color: {bg};" for _ in row.index]
+    return df.style.apply(apply_row_style, axis=1)
+
+
+def main():
+    inject_custom_css()
+
+    saved_infos = {
+        "인사 DB": get_saved_file_info(HR_SAVE_PATH, "hr"),
+        "임원 신청": get_saved_file_info(EXEC_SAVE_PATH, "exec"),
+        "직책자 신청": get_saved_file_info(LEADER_SAVE_PATH, "leader"),
+        "일반 신청": get_saved_file_info(GENERAL_SAVE_PATH, "general"),
+        "미수료자 DB": get_saved_file_info(BLACKLIST_SAVE_PATH, "blacklist"),
+        "지난 3차수 통합이력": get_saved_file_info(PREV_HISTORY_SAVE_PATH, "prev_history"),
+    }
+
+    render_topbar(saved_infos)
+
+    with st.sidebar:
+        st.markdown("### 운영 네비게이션")
+        st.caption("필터와 저장 현황을 한 번에 관리합니다.")
+        selected_course = st.selectbox("과정 필터", ["전체"] + list(COURSE_CAPACITY.keys()), index=0)
+        selected_status = st.selectbox("결과 상태", ["전체"] + RESULT_ORDER, index=0)
+        selected_risk = st.selectbox("리스크 필터", ["전체", "리스크 있음"] + RISK_ORDER, index=0)
+        search_text = st.text_input("사번/이름/조직 검색", value="")
+        st.divider()
+        st.markdown("### 저장 파일 현황")
+        for label, info in saved_infos.items():
+            if info:
+                st.caption(f"{label}: {info['original_name']} / {format_relative_time(info['uploaded_at'])}")
+            else:
+                st.caption(f"{label}: 없음")
+        st.divider()
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button("결과 초기화", use_container_width=True):
+                if AUTO_RESULT_SAVE_PATH.exists():
+                    AUTO_RESULT_SAVE_PATH.unlink()
+                if MANUAL_RESULT_SAVE_PATH.exists():
+                    MANUAL_RESULT_SAVE_PATH.unlink()
+                for key in ["selection_result", "manual_edit_df"]:
+                    if key in st.session_state:
+                        del st.session_state[key]
+                st.rerun()
+        with c2:
+            if st.button("파일 전체삭제", use_container_width=True):
+                clear_saved_files()
+                for key in list(st.session_state.keys()):
+                    if key.startswith("manual_editor") or key in ["selection_result", "manual_edit_df"]:
+                        del st.session_state[key]
+                st.rerun()
+        st.divider()
+        st.markdown("### 적용 기준 요약")
+        st.markdown(
+            "- 우선순위: 임원 → 직책자 → 일반직원\n"
+            "- 민병철유폰/튜터링: 최근 3년 GST 보유 중심\n"
+            "- 링글: 국내 6 이상 / 해외 5 이상\n"
+            "- 스픽: 임원/직책자 우선, 일반은 GST 보유 우선\n"
+            "- 블랙리스트: 해당월 기준 6개월 제외"
+        )
+
+    tab_upload, tab_auto, tab_manual, tab_final, tab_download = st.tabs([
+        "1. 업로드/품질점검", "2. 자동 선발", "3. 수동검토", "4. 최종 결과", "5. 다운로드/배포"
+    ])
+
+    with tab_upload:
+        render_panel_header("파일 업로드 및 품질 점검", "업로드 직후 파일별 상태, 필수 컬럼, 품질 이슈를 확인합니다.")
+        u1, u2, u3 = st.columns(3)
+        with u1:
+            hr_file = st.file_uploader("인사 DB", type=["csv", "xlsx", "xls"], key="hr")
+            exec_file = st.file_uploader("임원 신청", type=["csv", "xlsx", "xls"], key="exec")
+        with u2:
+            leader_file = st.file_uploader("직책자 신청", type=["csv", "xlsx", "xls"], key="leader")
+            general_file = st.file_uploader("일반 신청", type=["csv", "xlsx", "xls"], key="general")
+        with u3:
+            blacklist_file = st.file_uploader("미수료자 DB", type=["csv", "xlsx", "xls"], key="blacklist")
+            prev_history_file = st.file_uploader("지난 3차수 통합이력", type=["csv", "xlsx", "xls"], key="prev_history")
+
+        try:
+            hr_raw = read_uploaded_or_saved(hr_file, HR_SAVE_PATH, "hr")
+            exec_raw = read_uploaded_or_saved(exec_file, EXEC_SAVE_PATH, "exec")
+            leader_raw = read_uploaded_or_saved(leader_file, LEADER_SAVE_PATH, "leader")
+            general_raw = read_uploaded_or_saved(general_file, GENERAL_SAVE_PATH, "general")
+            blacklist_raw = read_uploaded_or_saved(blacklist_file, BLACKLIST_SAVE_PATH, "blacklist")
+            prev_history_raw = read_uploaded_or_saved(prev_history_file, PREV_HISTORY_SAVE_PATH, "prev_history")
+
+            hr_df = standardize_hr_df(hr_raw) if not hr_raw.empty else standardize_hr_df(pd.DataFrame())
+            exec_df = standardize_exec_df(exec_raw) if not exec_raw.empty else pd.DataFrame()
+            leader_df = standardize_leader_df(leader_raw) if not leader_raw.empty else pd.DataFrame()
+            general_df = standardize_general_df(general_raw) if not general_raw.empty else pd.DataFrame()
+            blacklist_df = standardize_blacklist_df(blacklist_raw) if not blacklist_raw.empty else standardize_blacklist_df(pd.DataFrame())
+            prev_history_df = standardize_previous_history_df(prev_history_raw) if not prev_history_raw.empty else pd.DataFrame()
+
+            applicant_df = build_applicant_df(exec_df, leader_df, general_df)
+            quality_issue_df = build_quality_issue_df(applicant_df, hr_df)
+
+            upload_summary_df = pd.DataFrame([
+                summarize_upload_quality("인사 DB", hr_raw, hr_df, ["사번", "한글", "조직명"]),
+                summarize_upload_quality("임원 신청", exec_raw, exec_df, ["사번", "원본과정", "신청시간"]),
+                summarize_upload_quality("직책자 신청", leader_raw, leader_df, ["사번", "원본과정", "신청시간"]),
+                summarize_upload_quality("일반 신청", general_raw, general_df, ["사번", "원본과정", "신청시간"]),
+                summarize_upload_quality("미수료자 DB", blacklist_raw, blacklist_df, ["사번", "해당월"]),
+                summarize_upload_quality("지난 3차수 이력", prev_history_raw, prev_history_df, ["사번", "과정명", "차수"]),
+            ])
+
+            k1, k2, k3, k4 = st.columns(4)
+            with k1:
+                render_kpi("신청자 수", f"{len(applicant_df):,}명", "3개 신청폼 통합 기준", "blue")
+            with k2:
+                hr_match = int(applicant_df["사번"].isin(set(hr_df["사번"])).sum()) if not applicant_df.empty and not hr_df.empty else 0
+                render_kpi("인사DB 매칭", f"{hr_match:,}명", "사번 기준 매칭", "green")
+            with k3:
+                render_kpi("품질 이슈", f"{len(quality_issue_df):,}건", "사번/시간/과정/매칭 기준", "red")
+            with k4:
+                other_count = int((applicant_df["신청과정"] == "기타").sum()) if not applicant_df.empty else 0
+                render_kpi("과정 미분류", f"{other_count:,}건", "과정 alias 점검 필요", "purple")
+
+            left, right = st.columns([1.1, 1])
+            with left:
+                with st.container(border=True):
+                    render_panel_header("업로드 상태표", "파일별 업로드 여부, 필수 컬럼, 주요 경고를 확인합니다.")
+                    st.dataframe(upload_summary_df, use_container_width=True, hide_index=True)
+            with right:
+                with st.container(border=True):
+                    render_panel_header("운영 메모", "지금 단계에서 먼저 확인할 핵심 포인트입니다.")
+                    if quality_issue_df.empty:
+                        st.markdown('<div class="good-box"><b>품질 이슈가 없습니다.</b><br>이 상태로 자동 선발을 실행해도 무방합니다.</div>', unsafe_allow_html=True)
+                    else:
+                        top_issue = quality_issue_df["유형"].value_counts().head(5)
+                        for issue_name, cnt in top_issue.items():
+                            st.markdown(f'<div class="risk-box"><b>{issue_name}</b><br>{cnt}건 확인 필요</div>', unsafe_allow_html=True)
+
+            q1, q2 = st.columns([1.1, 1])
+            with q1:
+                with st.container(border=True):
+                    render_panel_header("품질 이슈 상세", "자동 선발 전 보정하거나 수동확인 대상으로 남길 항목입니다.")
+                    st.dataframe(quality_issue_df.head(300), use_container_width=True, hide_index=True)
+            with q2:
+                with st.container(border=True):
+                    render_panel_header("원본 미리보기", "업로드 데이터 일부를 빠르게 확인합니다.")
+                    preview_tab1, preview_tab2, preview_tab3 = st.tabs(["신청 통합", "인사DB", "이력/블랙리스트"])
+                    with preview_tab1:
+                        st.dataframe(normalize_display_df(applicant_df).head(50), use_container_width=True)
+                    with preview_tab2:
+                        st.dataframe(normalize_display_df(hr_df).head(50), use_container_width=True)
+
+                        st.divider()
+                        st.markdown("**인사DB 직책자 추출**")
+                        leader_hr_df = extract_leader_hr_df(hr_df)
+                        if leader_hr_df.empty:
+                            st.info("인사DB에서 직책자로 분류된 데이터가 없습니다.")
+                        else:
+                            st.caption(f"인사DB 기준 직책자 {len(leader_hr_df):,}명")
+                            st.download_button(
+                                label="인사DB 직책자 리스트 CSV 다운로드",
+                                data=to_csv_bytes(leader_hr_df),
+                                file_name="인사DB_직책자리스트.csv",
+                                mime="text/csv",
+                                use_container_width=True,
+                            )
+                            st.dataframe(leader_hr_df.head(50), use_container_width=True)
+                    with preview_tab3:
+                        prev_preview = prev_history_df.head(30) if not prev_history_df.empty else pd.DataFrame()
+                        bl_preview = blacklist_df.head(30) if not blacklist_df.empty else pd.DataFrame()
+                        st.markdown("**블랙리스트**")
+                        st.dataframe(bl_preview, use_container_width=True)
+                        st.markdown("**지난 3차수 이력**")
+                        st.dataframe(prev_preview, use_container_width=True)
+
+        except Exception as e:
+            st.error(f"업로드 처리 중 오류가 발생했습니다: {e}")
+            return
+
+    with tab_auto:
+        render_panel_header("자동 선발 실행", "고정 기준 + 우선순위 점수 + 정원 기준으로 자동 결과를 생성합니다.")
+        if applicant_df.empty:
+            st.info("먼저 업로드/품질점검 탭에서 신청 파일을 준비해주세요.")
+        else:
+            col_a, col_b = st.columns([1, 2])
+            with col_a:
+                if st.button("자동 선발 실행", type="primary", use_container_width=True):
+                    base_result = run_selection_engine(hr_df, exec_df, leader_df, general_df, blacklist_df, prev_history_df)
+                    save_auto_result(base_result)
+                    st.session_state["selection_result"] = base_result.copy()
+                    st.session_state["manual_edit_df"] = build_manual_review_df(base_result)
+                    st.success("자동 선발 결과를 생성했습니다.")
+                    st.rerun()
+            with col_b:
+                st.markdown('<div class="muted-box"><b>정렬 기준</b><br>1차판정 → 역할 우선순위 → 우선순위점수 내림차순 → 신청시간 오름차순 → 사번 오름차순</div>', unsafe_allow_html=True)
+
+            if "selection_result" not in st.session_state:
+                saved_auto = load_auto_result()
+                if not saved_auto.empty:
+                    st.session_state["selection_result"] = saved_auto.copy()
+                    st.session_state["manual_edit_df"] = build_manual_review_df(saved_auto)
+
+            if "selection_result" in st.session_state:
+                base_result_df = ensure_row_id(st.session_state["selection_result"].copy())
+                filtered_base = filter_result_df(normalize_display_df(base_result_df), selected_course, "전체", "전체", search_text)
+                metric_base_df = filter_result_df(base_result_df.copy(), selected_course, "전체", "전체", "")
+
+                a1, a2, a3, a4, a5, a6 = st.columns(6)
+                with a1:
+                    render_kpi("총 신청", f"{len(metric_base_df):,}", "선택 과정 기준", "blue")
+                with a2:
+                    render_kpi("자동 선발", f"{int((metric_base_df['최종결과'] == '선발').sum()):,}", "선택 과정 기준", "green")
+                with a3:
+                    render_kpi("후순위", f"{int((metric_base_df['최종결과'] == '후순위').sum()):,}", "선택 과정 기준", "yellow")
+                with a4:
+                    render_kpi("제외", f"{int((metric_base_df['최종결과'] == '제외').sum()):,}", "선택 과정 기준", "red")
+                with a5:
+                    render_kpi("수동확인", f"{int((metric_base_df['최종결과'] == '수동확인').sum()):,}", "선택 과정 기준", "purple")
+                with a6:
+                    risk_cnt = int(metric_base_df["리스크유형"].fillna("").astype(str).str.strip().ne("").sum())
+                    render_kpi("리스크", f"{risk_cnt:,}", "선택 과정 기준", "gray")
+
+                with st.container(border=True):
+                    render_panel_header("자동 선발 결과 테이블", "과정/검색 필터를 반영한 결과입니다.")
+                    show_cols = [c for c in ["사번", "성명", "신청시간", "신청과정", "대상유형", "조직명", "GST(최근)", "GST(3년)", "지난3차수차수", "우선순위점수", "리스크유형", "1차판정", "최종결과", "최종사유"] if c in filtered_base.columns]
+                    st.dataframe(style_result_table(filtered_base[show_cols]), use_container_width=True, hide_index=True)
+
+                with st.container(border=True):
+                    render_panel_header("요약표", "자동 선발 결과를 과정별로 분리해 표시합니다.")
+                    summary_auto = build_role_result_summary_df(metric_base_df, "최종결과")
+                    render_course_split_summary(summary_auto)
+
+                with st.container(border=True):
+                    render_panel_header("과정별 / 대상유형별 KPI", "과정별 대상유형 구성, 선정 비율, 직책자 선발 상한(민병철유폰/스픽 30명)을 함께 확인합니다.")
+                    auto_kpi_df = build_course_role_kpi_df(metric_base_df, "최종결과")
+                    render_course_role_kpi(auto_kpi_df, "선발기준은 직책자 선발 인원 기준으로 계산했습니다.")
+
+                    risk_summary = metric_base_df["리스크유형"].fillna("").astype(str).str.split(r"\s*\|\s*").explode()
+                    risk_summary = risk_summary[risk_summary.str.strip() != ""]
+                    st.markdown("**리스크 사유 분포**")
+                    if len(risk_summary) > 0:
+                        st.dataframe(risk_summary.value_counts().reset_index().rename(columns={"index": "리스크유형", "리스크유형": "건수"}), use_container_width=True, hide_index=True)
+                    else:
+                        st.info("리스크 사유가 없습니다.")
+
+    with tab_manual:
+        render_panel_header("수동검토", "예외 케이스만 골라 빠르게 수정하도록 구성한 화면입니다.")
+        if "selection_result" not in st.session_state:
+            st.info("먼저 자동 선발을 실행해주세요.")
+        else:
+            base_result_df = ensure_row_id(st.session_state["selection_result"].copy())
+            if "manual_edit_df" not in st.session_state:
+                loaded_manual = load_manual_result()
+                st.session_state["manual_edit_df"] = loaded_manual if not loaded_manual.empty else build_manual_review_df(base_result_df)
+
+            manual_source_df = ensure_row_id(normalize_display_df(st.session_state["manual_edit_df"].copy()))
+            if "수동최종결과" not in manual_source_df.columns:
+                manual_source_df["수동최종결과"] = manual_source_df["최종결과"]
+            if "수동사유" not in manual_source_df.columns:
+                manual_source_df["수동사유"] = manual_source_df["최종사유"]
+
+            manual_views = {
+                "수동확인만": manual_source_df[manual_source_df["수동최종결과"] == "수동확인"].copy(),
+                "리스크 있음": manual_source_df[manual_source_df["리스크유형"].fillna("").astype(str).str.strip() != ""].copy(),
+                "인사DB 미매칭": manual_source_df[manual_source_df["리스크유형"].fillna("").astype(str).str.contains("인사DB 미매칭", na=False)].copy(),
+                "과정 미분류": manual_source_df[manual_source_df["리스크유형"].fillna("").astype(str).str.contains("과정 미분류", na=False)].copy(),
+                "정원 경계선": manual_source_df[manual_source_df["리스크유형"].fillna("").astype(str).str.contains("정원 경계선", na=False)].copy(),
+                "전체": manual_source_df.copy(),
+            }
+
+            subtab_names = list(manual_views.keys())
+            subtabs = st.tabs(subtab_names)
+
+            for tab_name, subtab in zip(subtab_names, subtabs):
+                with subtab:
+                    current_df = manual_views[tab_name].copy()
+                    current_df = filter_result_df(current_df, selected_course, "전체", "전체", search_text)
+                    if current_df.empty:
+                        st.info("표시할 대상이 없습니다.")
+                        continue
+                    show_cols = [c for c in [
+                        "__row_id", "사번", "성명", "신청시간", "신청과정", "대상유형", "조직명", "GST(최근)", "GST(3년)",
+                        "지난3차수차수", "우선순위점수", "리스크유형", "1차판정", "1차판정사유", "수동최종결과", "수동사유", "지난3차수정보"
+                    ] if c in current_df.columns]
+                    with st.form(key=f"manual_form_{tab_name}"):
+                        edited_df = st.data_editor(
+                            current_df[show_cols],
+                            use_container_width=True,
+                            hide_index=True,
+                            disabled=[c for c in show_cols if c not in ["수동최종결과", "수동사유"]],
+                            column_config={
+                                "__row_id": None,
+                                "수동최종결과": st.column_config.SelectboxColumn("수동최종결과", options=RESULT_ORDER, required=True),
+                                "수동사유": st.column_config.TextColumn("수동사유", width="large"),
+                            },
+                            key=f"manual_editor_{tab_name}",
+                        )
+                        submit_manual = st.form_submit_button("수동 수정 저장", use_container_width=True)
+                    if submit_manual:
+                        edited_df = ensure_row_id(edited_df)
+                        edit_small = edited_df[["__row_id", "수동최종결과", "수동사유"]].drop_duplicates(subset=["__row_id"], keep="last")
+                        latest_manual_df = ensure_row_id(st.session_state["manual_edit_df"].copy())
+                        latest_manual_df = latest_manual_df.drop(columns=["수동최종결과", "수동사유"], errors="ignore").merge(
+                            edit_small, on="__row_id", how="left"
+                        )
+                        latest_manual_df["수동최종결과"] = latest_manual_df["수동최종결과"].replace("", pd.NA).fillna(latest_manual_df["최종결과"])
+                        latest_manual_df["수동사유"] = latest_manual_df["수동사유"].replace("", pd.NA).fillna(latest_manual_df["최종사유"])
+                        st.session_state["manual_edit_df"] = ensure_row_id(latest_manual_df.copy())
+                        save_manual_result(st.session_state["manual_edit_df"])
+                        st.success("수동 수정 결과를 저장했습니다.")
+                        st.rerun()
+
+            if st.button("수동 수정 초기화", use_container_width=True):
+                st.session_state["manual_edit_df"] = build_manual_review_df(base_result_df)
+                if MANUAL_RESULT_SAVE_PATH.exists():
+                    MANUAL_RESULT_SAVE_PATH.unlink()
+                st.rerun()
+
+    with tab_final:
+        render_panel_header("최종 결과", "수동 검토를 반영한 확정 결과와 조직별 분포를 확인합니다.")
+        if "selection_result" not in st.session_state:
+            st.info("먼저 자동 선발을 실행해주세요.")
+        else:
+            final_df = merge_manual_result(st.session_state["selection_result"].copy(), st.session_state.get("manual_edit_df", pd.DataFrame()))
+            st.session_state["selection_result"] = final_df.copy()
+            filtered_final_df = filter_result_df(normalize_display_df(final_df.copy()), selected_course, selected_status, selected_risk, search_text)
+            metric_final_df = filter_result_df(final_df.copy(), selected_course, "전체", "전체", "")
+
+            k1, k2, k3, k4, k5 = st.columns(5)
+            with k1:
+                render_kpi("총 신청", f"{len(metric_final_df):,}", "선택 과정 기준", "blue")
+            with k2:
+                render_kpi("최종 선발", f"{int((metric_final_df['수동최종결과'] == '선발').sum()):,}", "선택 과정 기준", "green")
+            with k3:
+                render_kpi("후순위", f"{int((metric_final_df['수동최종결과'] == '후순위').sum()):,}", "선택 과정 기준", "yellow")
+            with k4:
+                render_kpi("제외", f"{int((metric_final_df['수동최종결과'] == '제외').sum()):,}", "선택 과정 기준", "red")
+            with k5:
+                render_kpi("수동확인 잔여", f"{int((metric_final_df['수동최종결과'] == '수동확인').sum()):,}", "선택 과정 기준", "purple")
+
+            with st.container(border=True):
+                render_panel_header("최종 결과 테이블", "필터를 반영한 최종 확정 데이터입니다.")
+                view_cols = [c for c in ["사번", "성명", "신청시간", "신청과정", "대상유형", "조직명", "부문/본부", "GST(최근)", "GST(3년)", "지난3차수차수", "우선순위점수", "리스크유형", "수동최종결과", "수동사유"] if c in filtered_final_df.columns]
+                st.dataframe(style_result_table(filtered_final_df[view_cols]), use_container_width=True, hide_index=True)
+
+            with st.container(border=True):
+                render_panel_header("최종 결과 요약", "확정 결과를 과정별로 분리해 표시합니다.")
+                final_summary_df = build_role_result_summary_df(metric_final_df, "수동최종결과")
+                render_course_split_summary(final_summary_df)
+
+            with st.container(border=True):
+                render_panel_header("과정별 / 대상유형별 KPI", "과정별 대상유형 구성, 선정 비율, 직책자 선발 상한(민병철유폰/스픽 30명)을 함께 확인합니다.")
+                final_kpi_df = build_course_role_kpi_df(metric_final_df, "수동최종결과")
+                render_course_role_kpi(final_kpi_df, "선발기준은 직책자 선발 인원 기준으로 계산했습니다.")
+
+            org_col, div_col = st.columns(2)
+            with org_col:
+                with st.container(border=True):
+                    render_panel_header("조직명 기준 현황", "조직별 신청/선발/제외/수동확인 현황")
+                    st.dataframe(build_org_summary_df(filter_result_df(final_df, selected_course, "전체", "전체", "")), use_container_width=True, hide_index=True)
+            with div_col:
+                with st.container(border=True):
+                    render_panel_header("부문/본부 기준 현황", "부문별 신청/선발/제외/수동확인 현황")
+                    st.dataframe(build_division_summary_df(filter_result_df(final_df, selected_course, "전체", "전체", "")), use_container_width=True, hide_index=True)
+
+    with tab_download:
+        render_panel_header("다운로드 및 배포", "지정 양식 CSV를 내리기 전 누락값과 미처리 건을 확인합니다.")
+        if "selection_result" not in st.session_state:
+            st.info("먼저 자동 선발을 실행해주세요.")
+        else:
+            final_df = merge_manual_result(st.session_state["selection_result"].copy(), st.session_state.get("manual_edit_df", pd.DataFrame()))
+            download_target_df = filter_result_df(final_df.copy(), selected_course, "전체", "전체", "")
+            export_download_df = build_download_export_df(download_target_df, hr_df, prev_history_df)
+            checklist_df = build_download_checklist(export_download_df, final_df)
+
+            left, right = st.columns([0.9, 1.1])
+            with left:
+                with st.container(border=True):
+                    render_panel_header("다운로드 전 체크리스트", "0건이 아니면 배포 전에 한 번 더 확인해주세요.")
+                    st.dataframe(checklist_df, use_container_width=True, hide_index=True)
+                    unresolved = int(checklist_df["건수"].sum())
+                    if unresolved == 0:
+                        st.markdown('<div class="good-box"><b>배포 준비 완료</b><br>필수 체크 항목 기준으로 누락이 없습니다.</div>', unsafe_allow_html=True)
+                    else:
+                        st.markdown(f'<div class="risk-box"><b>검수 필요</b><br>체크 항목 합계 {unresolved}건이 남아 있습니다.</div>', unsafe_allow_html=True)
+            with right:
+                with st.container(border=True):
+                    render_panel_header("지정 양식 미리보기", "현재 선택한 필터 기준의 다운로드 포맷입니다.")
+                    st.dataframe(export_download_df.head(100), use_container_width=True, hide_index=True)
+
+            st.download_button(
+                "지정 양식 CSV 다운로드",
+                to_csv_bytes(export_download_df),
+                "어학과정_지정양식_전체결과.csv" if selected_course == "전체" else f"어학과정_지정양식_{selected_course}.csv",
+                "text/csv",
+                use_container_width=True,
+            )
+
+
+if __name__ == "__main__":
+    main()
