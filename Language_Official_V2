@@ -239,12 +239,11 @@ def to_csv_bytes(df: pd.DataFrame) -> bytes:
     return df.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
 
 
-def normalize_emp_no(value, allow_alpha: bool = False) -> str:
+def normalize_emp_no(value) -> str:
     if pd.isna(value):
         return ""
-
     text = str(value).strip()
-    text = text.replace(" ", " ").replace("​", "")
+    text = text.replace(" ", " ").replace("​", "")
     text = text.replace("'", "").replace('"', "")
     text = text.replace(",", "")
     text = text.replace(".0", "")
@@ -254,11 +253,9 @@ def normalize_emp_no(value, allow_alpha: bool = False) -> str:
         "０１２３４５６７８９ＡＢＣＤＥＦＧＨＩＪＫＬＭＮＯＰＱＲＳＴＵＶＷＸＹＺａｂｃｄｅｆｇｈｉｊｋｌｍｎｏｐｑｒｓｔｕｖｗｘｙｚ",
         "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
     ))
+    text = re.sub(r"[\s\-]+", "", text).upper()
 
-    # 공백/하이픈 제거
-    text = re.sub(r"[\s\-]+", "", text)
-
-    # Excel scientific notation fallback (숫자 사번만 해당)
+    # Excel scientific notation fallback (e.g. 1.2345E+04)
     sci_match = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*[eE]\s*\+?\s*(\d+)\s*", text)
     if sci_match:
         try:
@@ -266,21 +263,13 @@ def normalize_emp_no(value, allow_alpha: bool = False) -> str:
         except Exception:
             pass
 
-    if allow_alpha:
-        # 일반신청 등에서 영문 사번 허용
-        # 영문/숫자만 남기고 대문자로 통일
-        alnum = "".join(ch for ch in text if ch.isalnum()).upper()
-        return alnum
+    # 허용 형식 1) 숫자 5자리, 2) A/B/C/D + 숫자 4자리 (예: B1234)
+    if re.fullmatch(r"\d{5}", text):
+        return text
+    if re.fullmatch(r"[ABCD]\d{4}", text):
+        return text
 
-    # 숫자 사번 전용 처리
-    if re.search(r"[A-Za-z]", text):
-        return ""
-
-    digits = "".join(ch for ch in text if ch.isdigit())
-    if not digits:
-        return ""
-
-    return digits.zfill(5) if len(digits) < 5 else digits
+    return ""
 
 
 def infer_column(df: pd.DataFrame, candidate_keywords: list[str]):
@@ -410,6 +399,8 @@ def normalize_display_df(df: pd.DataFrame) -> pd.DataFrame:
     result = df.copy()
     if "사번" in result.columns:
         result["사번"] = result["사번"].apply(normalize_emp_no).astype(str)
+    if "사번매칭키" in result.columns:
+        result["사번매칭키"] = result["사번매칭키"].fillna("").astype(str)
     if "한글" in result.columns:
         if "성명" not in result.columns:
             result["성명"] = ""
@@ -656,29 +647,12 @@ def _standardize_applicant_common(df: pd.DataFrame, applicant_type: str, form_ki
     result["신청구분"] = applicant_type
     result["신청원본유형"] = form_kind
     result["사번원본"] = result["사번"].copy()
-
-    allow_alpha_emp_no = (applicant_type == "일반신청")
-
-    result["사번"] = result["사번"].apply(
-        lambda x: normalize_emp_no(x, allow_alpha=allow_alpha_emp_no)
+    result["사번"] = result["사번"].apply(normalize_emp_no)
+    result["사번매칭키"] = result["사번"].apply(clean_text)
+    result["사번이상"] = result.apply(
+        lambda x: "Y" if clean_text(x.get("사번", "")) == "" else "",
+        axis=1,
     )
-
-    if allow_alpha_emp_no:
-        # 일반신청은 영문+숫자 사번 허용
-        result["사번이상"] = result.apply(
-            lambda x: "Y" if clean_text(x.get("사번", "")) == "" else "",
-            axis=1,
-        )
-    else:
-        # 임원/직책자/기타는 기존처럼 숫자 사번 기준 유지
-        result["사번이상"] = result.apply(
-            lambda x: "Y" if (
-                clean_text(x.get("사번", "")) == ""
-                or not clean_text(x.get("사번", "")).isdigit()
-                or bool(re.search(r"[A-Za-z]", clean_text(x.get("사번원본", ""))))
-            ) else "",
-            axis=1,
-        )
     result["성명"] = safe_str_series(result["성명"])
     result["원본과정"] = safe_str_series(result["원본과정"])
     result["신청과정"] = result["원본과정"].apply(get_simple_course)
@@ -760,10 +734,12 @@ def build_applicant_df(exec_df: pd.DataFrame, leader_df: pd.DataFrame, general_d
         return pd.DataFrame()
     combined = pd.concat(frames, ignore_index=True)
     combined["사번"] = combined["사번"].apply(normalize_emp_no)
+    if "사번매칭키" not in combined.columns:
+        combined["사번매칭키"] = combined["사번"].apply(clean_text)
     combined["신청시간"] = safe_to_datetime(combined["신청시간"])
-    combined["중복신청건수"] = combined.groupby(["사번", "신청과정"])["사번"].transform("size")
-    combined = combined.sort_values(by=["신청시간", "사번"], ascending=[True, True]).copy()
-    return combined.drop_duplicates(subset=["사번", "신청과정"], keep="first").copy()
+    combined["중복신청건수"] = combined.groupby(["사번매칭키", "신청과정"])["사번매칭키"].transform("size")
+    combined = combined.sort_values(by=["신청시간", "사번매칭키", "사번"], ascending=[True, True, True]).copy()
+    return combined.drop_duplicates(subset=["사번매칭키", "신청과정"], keep="first").copy()
 
 
 def get_blacklist_hit_reason(emp_no: str, app_time: pd.Timestamp, blacklist_df: pd.DataFrame) -> str:
@@ -881,17 +857,8 @@ def build_validation_flags(row: pd.Series) -> tuple[bool, str]:
     ignore_time_parse = clean_text(row.get("신청시간파싱무시", "")) == "Y"
     has_hr_match = any(clean_text(row.get(col, "")) for col in ["한글", "직위명", "직책명", "근무지명(JOB)", "조직명", "부문/본부"]) or pd.notna(gst_recent) or pd.notna(gst_3year)
 
-    emp_no_raw = clean_text(row.get("사번원본", ""))
-    is_general_app = clean_text(row.get("신청구분", "")) == "일반신청"
-
-    if is_general_app:
-        # 일반신청은 영문+숫자 사번 허용
-        if not emp_no or not re.fullmatch(r"[A-Za-z0-9]+", emp_no):
-            reasons.append("사번 형식 이상")
-    else:
-        # 기존 로직 유지
-        if not emp_no or not emp_no.isdigit() or len(emp_no) < 5:
-            reasons.append("사번 형식 이상")
+    if not emp_no or not (re.fullmatch(r"\d{5}", emp_no) or re.fullmatch(r"[ABCD]\d{4}", emp_no)):
+        reasons.append("사번 형식 이상")
     if clean_text(row.get("사번이상", "")) == "Y":
         reasons.append("사번 정규화 실패")
     if pd.isna(app_time) and not ignore_time_parse:
@@ -972,7 +939,6 @@ def evaluate_one_applicant(row: pd.Series, blacklist_df: pd.DataFrame) -> dict:
         "근무지명(JOB)": row.get("근무지명(JOB)", ""),
         "사번이상": row.get("사번이상", ""),
         "신청시간파싱무시": row.get("신청시간파싱무시", ""),
-        "신청구분": row.get("신청구분", ""),
     }))
     base["검증필요"] = validation_flag
     base["검증사유"] = validation_reason
@@ -1033,7 +999,12 @@ def run_selection_engine(hr_df, exec_df, leader_df, general_df, blacklist_df, pr
     blacklist_df = standardize_blacklist_df(blacklist_df if blacklist_df is not None else pd.DataFrame())
     prev_features = build_prev_history_features(prev_history_df if prev_history_df is not None else pd.DataFrame())
 
-    merged = applicant_df.merge(hr_df, on="사번", how="left")
+    if "사번매칭키" not in applicant_df.columns:
+        applicant_df["사번매칭키"] = applicant_df["사번"].apply(clean_text)
+    if "사번매칭키" not in hr_df.columns:
+        hr_df["사번매칭키"] = hr_df["사번"].apply(clean_text)
+
+    merged = applicant_df.merge(hr_df, on="사번매칭키", how="left", suffixes=("", "_hr"))
     merged = merged.merge(prev_features, on="사번", how="left")
     merged["성명"] = merged.apply(lambda x: clean_text(x["성명"]) if clean_text(x.get("성명", "")) else clean_text(x.get("한글", "")), axis=1)
     merged["이메일"] = merged.apply(lambda x: clean_text(x["이메일"]) if clean_text(x.get("이메일", "")) else clean_text(x.get("회사메일", "")), axis=1)
@@ -1218,8 +1189,8 @@ def build_quality_issue_df(applicant_df: pd.DataFrame, hr_df: pd.DataFrame) -> p
         course = clean_text(row.get("신청과정", ""))
         ignore_time_parse = clean_text(row.get("신청시간파싱무시", "")) == "Y"
 
-        if not emp or len(emp) < 5:
-            issues.append({"유형": "사번 형식 이상", "사번": emp, "성명": name, "신청과정": course, "상세": "사번 길이 또는 숫자 형식 확인 필요"})
+        if not emp or not (re.fullmatch(r"\d{5}", emp) or re.fullmatch(r"[ABCD]\d{4}", emp)):
+            issues.append({"유형": "사번 형식 이상", "사번": emp, "성명": name, "신청과정": course, "상세": "허용 형식: 숫자 5자리 또는 A/B/C/D + 숫자 4자리"})
         if pd.isna(pd.to_datetime(row.get("신청시간"), errors="coerce")) and not ignore_time_parse:
             issues.append({"유형": "신청시간 파싱 실패", "사번": emp, "성명": name, "신청과정": course, "상세": "시작/완료 시간 포맷 확인 필요"})
         if course == "기타":
