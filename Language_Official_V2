@@ -968,10 +968,12 @@ def evaluate_one_applicant(row: pd.Series, blacklist_df: pd.DataFrame) -> dict:
             first_status, first_reason, priority_group = "선발검토", f"{get_role_priority_text(role_type)} 자동 승인", get_priority_group_by_role(role_type)
         else:
             required_level = 5 if work_location_type == "해외" else 6
-            if pd.notna(gst_recent) and gst_recent >= required_level:
-                first_status, first_reason, priority_group = "선발검토", f"{work_location_type} 근무자 기준 GST 레벨 {required_level} 이상 충족 / {get_role_priority_text(role_type)} 우선순위 반영", get_priority_group_by_role(role_type, 2)
+            if pd.notna(gst_3year) and gst_3year >= required_level:
+                first_status, first_reason, priority_group = "선발검토", f"{work_location_type} 근무자 기준 최근 3년 GST 레벨 {required_level} 이상 충족 / {get_role_priority_text(role_type)} 우선순위 반영", get_priority_group_by_role(role_type, 2)
+            elif pd.notna(gst_recent) and pd.isna(gst_3year):
+                first_status, first_reason, priority_group = "제외", "최근 3년 내 유효 GST 성적 없음 (단, GST 성적 보유)", 99
             else:
-                first_status, first_reason, priority_group = "제외", f"{work_location_type} 근무자 기준 GST 레벨 {required_level} 미달", 99
+                first_status, first_reason, priority_group = "제외", f"{work_location_type} 근무자 기준 최근 3년 GST 레벨 {required_level} 미달", 99
     elif course == "스픽":
         if role_type in ["임원", "직책자"]:
             first_status, first_reason, priority_group = "선발검토", f"{get_role_priority_text(role_type)} 자동 승인", get_priority_group_by_role(role_type)
